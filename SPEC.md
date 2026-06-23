@@ -61,7 +61,7 @@ backend feature.
 
 ### 2.2 Source Files
 
-Avtan source files use the extension `.avt`.
+Avtan source files use the extension `.avtn`.
 
 Each file starts with an optional package declaration:
 
@@ -129,7 +129,7 @@ import github.com.acme.store as store
 
 Rules:
 
-1. A package contains one or more `.avt` files in one directory.
+1. A package contains one or more `.avtn` files in one directory.
 2. `pub` items are exported from the package.
 3. Non-`pub` items are package-private.
 4. A package may define an `init` function with signature `fn init()`.
