@@ -3,9 +3,11 @@
 Status: draft 0.1
 
 Этот файл описывает практический порядок реализации языка Avtan из `SPEC.md`.
-Главный принцип: сначала получить маленький компилятор, который стабильно
-парсит, типизирует и генерирует Go для ограниченного подмножества, затем
-расширять его до зависимых типов, ownership-модели и встроенной многопоточности.
+Главный принцип: с самого начала строить компилятор вокруг полного
+Idris-подобного dependent core, а не добавлять зависимые типы потом как
+надстройку. Первый результат должен быть маленьким, но он уже обязан проходить
+через elaboration, normalization, dependent type checking, totality checking,
+erasure и только затем Go lowering.
 
 ## 1. Целевой MVP
 
@@ -15,16 +17,20 @@ Status: draft 0.1
 2. Чтение `avtan.toml`.
 3. Парсинг одного пакета из `.avtn` файлов.
 4. Диагностики с позициями в исходнике.
-5. AST для функций, структур, enum, выражений, `match`, `Result`, массивов и
-   слайсов.
-6. Базовая проверка типов без полного ownership checker.
-7. Refinement-типы для литералов и runtime-конструкторов.
-8. Минимальные `requires`-проверки.
-9. Генерация читаемого Go-кода.
-10. Генерация Go-тестов для `#[test]`.
-11. Простые конкурентные примитивы: `spawn`, `Task`, `Chan`, `select`.
+5. AST для функций, `data`, структур, enum, выражений, `match`, implicit args,
+   holes, equality proofs и `rewrite`.
+6. Dependent core с universes, Pi, Sigma, lambdas, applications, constructors,
+   case trees и erased binders.
+7. Elaboration из surface syntax в core.
+8. Normalization и definitional equality.
+9. Type checking для зависимых функций и dependent data.
+10. Coverage и structural termination для total definitions.
+11. Erasure proof/type-only значений.
+12. Генерация читаемого Go-кода из erased runtime core.
+13. Компиляция примера `Nat`, `Vect`, `head`, `append`.
 
-Все остальные фичи считаются post-MVP, пока этот список не работает end-to-end.
+Все остальные фичи считаются post-MVP, пока этот dependent-core slice не работает
+end-to-end.
 
 ## 2. Архитектура Компилятора
 
@@ -52,17 +58,39 @@ src/
   hir/
     mod.rs
     lower.rs
+  core/
+    mod.rs
+    term.rs
+    ty.rs
+    env.rs
+    levels.rs
+  elab/
+    mod.rs
+    holes.rs
+    implicit.rs
+    check.rs
+  nbe/
+    mod.rs
+    value.rs
+    quote.rs
+  unify/
+    mod.rs
   resolve/
     mod.rs
   types/
     mod.rs
-    ty.rs
-    infer.rs
-    check.rs
+    surface.rs
   proof/
     mod.rs
-    obligation.rs
-    solver.rs
+    equality.rs
+    search.rs
+  coverage/
+    mod.rs
+  totality/
+    mod.rs
+  erase/
+    mod.rs
+    ir.rs
   ownership/
     mod.rs
   effects/
@@ -82,9 +110,15 @@ src/
 
 1. `AST`: максимально близко к синтаксису.
 2. `HIR`: нормализованное дерево после name resolution.
-3. `Type IR`: типы, обобщения, const-параметры, refinement predicates.
-4. `Obligations`: список доказательств и runtime-проверок.
-5. `Go AST`: backend-представление, которое затем печатается в `.go`.
+3. `Core`: маленькое зависимо-типизированное ядро с universes, Pi, Sigma,
+   lambdas, applications, constructors, case trees, holes и erased binders.
+4. `Elaboration`: implicit arguments, metavariables, holes, surface-to-core
+   translation.
+5. `NBE/DefEq`: normalization by evaluation и definitional equality.
+6. `Coverage/Totality`: проверки, которые делают proof/type-level computation
+   sound.
+7. `Erased IR`: runtime-only программа после удаления proofs и type-only terms.
+8. `Go AST`: backend-представление, которое затем печатается в `.go`.
 
 ## 3. Этап 0: Репозиторный Каркас
 
@@ -136,7 +170,7 @@ Definition of done:
 
 ## 5. Этап 2: Parser И AST
 
-Цель: получить полное синтаксическое дерево для MVP-подмножества.
+Цель: получить полное синтаксическое дерево для первого dependent-core slice.
 
 Задачи:
 
@@ -148,15 +182,21 @@ Definition of done:
    5. `enum`
    6. `type`
    7. `fn`
-   8. `impl`
-   9. blocks
-   10. `let`
-   11. `if`
-   12. `match`
-   13. `for`, `while`, `loop`
-   14. calls, field access, indexing
-   15. generic arguments
-   16. `requires`, `ensures`, `where`
+   8. `data`
+   9. dependent constructor signatures
+   10. `impl`
+   11. blocks
+   12. `let`
+   13. `if`
+   14. `match`
+   15. `for`, `while`, `loop`
+   16. calls, field access, indexing
+   17. explicit, implicit, auto, and erased binders
+   18. holes like `?missing`
+   19. `rewrite`
+   20. `impossible`
+   21. `total` and `partial`
+   22. `requires`, `ensures`, `where`
 2. Реализовать operator precedence parser для выражений.
 3. Добавить error recovery внутри item/block/expression.
 4. Сохранить AST достаточно богатым для formatter.
@@ -206,38 +246,178 @@ Definition of done:
 2. Ошибка неизвестного имени указывает ближайшие похожие имена.
 3. Циклический импорт диагностируется.
 
-## 8. Этап 5: Базовая Type System
+## 8. Этап 5: Dependent Core IR
 
-Цель: типизировать обычный код без зависимых доказательств.
+Цель: реализовать маленькое ядро, в которое будет elaboration всего surface
+языка.
 
 Задачи:
 
-1. Реализовать представление типов:
-   1. primitives
-   2. tuples
-   3. arrays
-   4. slices
-   5. structs
-   6. enums
-   7. functions
-   8. generics
-   9. type aliases
-2. Реализовать type inference для локальных `let`.
-3. Реализовать проверку вызовов функций.
-4. Реализовать проверку `if` и `match`.
-5. Реализовать exhaustiveness для enum `match`.
-6. Реализовать `Result<T, E>` и оператор `?`.
-7. Добавить базовую проверку generic bounds без traits.
+1. Реализовать core terms:
+   1. variables
+   2. globals
+   3. universes `Type level`
+   4. Pi types
+   5. Sigma types
+   6. lambdas
+   7. applications
+   8. lets
+   9. constructors
+   10. case trees
+   11. metavariables
+   12. erased binders
+2. Реализовать context и telescope.
+3. Реализовать universe levels и constraints.
+4. Добавить pretty-printer core terms для diagnostics.
+5. Добавить builtins: `Type`, `Nat`, equality, `Refl`.
 
 Definition of done:
 
-1. Неверные типы дают понятные ошибки.
-2. `match` по enum обязан быть исчерпывающим.
-3. `?` работает только в функциях с совместимым `Result`.
+1. Core может представить `id`, `Nat`, `Vect`, `head`.
+2. Все binders имеют explicit/implicit/auto/erased режим.
+3. Core terms печатаются с человекочитаемыми именами.
 
-## 9. Этап 6: Go Backend v1
+## 9. Этап 6: Elaboration
 
-Цель: сгенерировать читаемый Go для уже типизированного подмножества.
+Цель: переводить Rust-like surface syntax в полный dependent core.
+
+Задачи:
+
+1. Реализовать bidirectional elaboration:
+   1. checking mode
+   2. synthesis mode
+2. Вставлять implicit arguments.
+3. Создавать metavariables для holes и невыведенных аргументов.
+4. Поддержать typed holes `?name`.
+5. Elaborate:
+   1. functions
+   2. lambdas
+   3. applications
+   4. dependent function types
+   5. dependent data declarations
+   6. pattern matches
+   7. `rewrite`
+   8. `impossible`
+6. Репортить unsolved holes с context и expected type.
+
+Definition of done:
+
+1. `fn id {A: Type} (x: A) -> A = x` elaborates.
+2. `head(xs)` восстанавливает implicit length index.
+3. Unsolved hole показывает локальный context.
+
+## 10. Этап 7: Normalization И Definitional Equality
+
+Цель: сделать проверку типов зависимой от вычисления программ в типах.
+
+Задачи:
+
+1. Реализовать normalization by evaluation или явно выбранную альтернативу.
+2. Реализовать quoting normalized values back to terms.
+3. Реализовать definitional equality:
+   1. beta
+   2. eta для функций, если включено
+   3. delta unfolding для transparent definitions
+   4. iota reduction для pattern matching
+4. Реализовать guarded unfolding, чтобы diagnostics не разворачивали весь мир.
+5. Реализовать unification для elaboration metavariables.
+
+Definition of done:
+
+1. `plus(Z, n)` и `n` считаются equal после normalization.
+2. `Refl` принимается только когда стороны definitionally equal.
+3. Ошибки equality показывают нормализованные формы.
+
+## 11. Этап 8: Dependent Type Checker
+
+Цель: проверять полные зависимые типы, а не отдельный набор const-параметров.
+
+Задачи:
+
+1. Проверять universes и не допускать `Type : Type`.
+2. Проверять Pi/Sigma types.
+3. Проверять dependent functions.
+4. Проверять dependent data constructors with indexed result types.
+5. Проверять equality type и `Refl`.
+6. Проверять `rewrite proof in expr`.
+7. Проверять implicit, auto и erased arguments.
+8. Проверять `requires`/`ensures` как dependent propositions.
+
+Definition of done:
+
+1. `Vect<A, n>` типизируется как type family.
+2. `head: Vect<A, S(n)> -> A` не требует runtime bounds check.
+3. Неверный индекс длины дает type error до Go lowering.
+
+## 12. Этап 9: Coverage И Totality
+
+Цель: гарантировать soundness вычислений, используемых в типах и proofs.
+
+Задачи:
+
+1. Реализовать coverage checking для dependent pattern matching.
+2. Поддержать `impossible` branches.
+3. Реализовать totality checker:
+   1. structural recursion
+   2. lexicographic recursion
+   3. mutual recursion через size-change analysis
+4. Разделить `total fn` и `partial fn`.
+5. Запретить использование `partial fn` в types/proofs/erased computation.
+6. Добавить diagnostics для non-covering и non-terminating definitions.
+
+Definition of done:
+
+1. Неполный `match` в total function диагностируется.
+2. Очевидная structural recursion принимается.
+3. General recursion разрешена только runtime-only `partial fn`.
+
+## 13. Этап 10: Proof Syntax, Equality И Search
+
+Цель: дать пользовательский Idris-like proof experience поверх dependent core.
+
+Задачи:
+
+1. Добавить `proof fn` как total erased function.
+2. Добавить equality proofs через `Refl`.
+3. Добавить `rewrite`.
+4. Добавить `ghost let` как erased let.
+5. Добавить `prove expr` как проверку proposition expression.
+6. Добавить `{auto p: P}` и ограниченный proof search.
+7. Поддержать `#[test] proof fn`.
+
+Definition of done:
+
+1. Proof-код не попадает в Go.
+2. Proof-код не может вызвать IO/spawn/unsafe.
+3. `plus_zero_right` доказывается pattern matching + rewrite.
+
+## 14. Этап 11: Erasure
+
+Цель: получить runtime-only IR перед Go backend.
+
+Задачи:
+
+1. Удалять:
+   1. types
+   2. proofs
+   3. erased arguments
+   4. implicit-only evidence
+   5. type-level indices
+2. Сохранять runtime-relevant dependent values.
+3. Проверять, что erased values не влияют на runtime control flow.
+4. Представить erased IR отдельно от Core.
+5. Добавить тесты `core -> erased`.
+
+Definition of done:
+
+1. `Vect<A, n>` runtime-представление не содержит proof-only `n`, если он не
+   нужен в runtime.
+2. Erased proof branch не влияет на Go output.
+3. Go backend получает только erased IR.
+
+## 15. Этап 12: Go Backend v1
+
+Цель: сгенерировать читаемый Go из erased runtime IR.
 
 Задачи:
 
@@ -255,133 +435,20 @@ Definition of done:
    1. Avtan package -> Go package
    2. `str` -> `string`
    3. numeric primitives -> Go numeric types
-   4. structs -> Go structs
+   4. erased structs/data -> Go structs/interfaces
    5. fieldless enums -> Go constants
-   6. payload enums -> interface + variant structs
+   6. payload enums/data -> interface + variant structs
    7. `Result<T, E>` -> `(T, error)` для Go-friendly функций
    8. `?` -> early return
-5. Добавить integration-тесты: `.avtn` -> `.go` -> `go test`.
+5. Добавить integration-тесты: `.avtn` -> erased IR -> `.go` -> `go test`.
 
 Definition of done:
 
-1. Компилятор генерирует Go-пакет.
+1. Компилятор генерирует Go-пакет из erased IR.
 2. Сгенерированный код проходит `gofmt`.
-3. Минимальный Avtan-тест запускается через Go `testing`.
+3. `Nat`/`Vect` proof code не попадает в Go.
 
-## 10. Этап 7: Refinement Types
-
-Цель: добавить первый полезный слой зависимых типов без solver-сложности.
-
-Задачи:
-
-1. Представить refinement type как base type + predicate.
-2. Поддержать синтаксис:
-
-   ```avtan
-   type Port = u16 where self > 0 && self <= 65535
-   ```
-
-3. Доказывать literal assignments:
-
-   ```avtan
-   let port: Port = 8080
-   ```
-
-4. Генерировать constructor:
-
-   ```avtan
-   Port::new(raw) -> Result<Port, RefinementError>
-   ```
-
-5. Генерировать runtime checks для недоказанных runtime-значений.
-6. Запретить неявное снятие refinement-типа, кроме безопасного upcast к base.
-
-Definition of done:
-
-1. Валидные литералы проходят compile-time.
-2. Невалидные литералы дают compile-time error.
-3. Runtime construction генерирует Go-проверку.
-
-## 11. Этап 8: Const Parameters И Indexed Types
-
-Цель: выразить инварианты длины и состояния на уровне типов.
-
-Задачи:
-
-1. Добавить `const N: Nat` в generics.
-2. Поддержать простые type-level expressions:
-   1. `N`
-   2. integer literals
-   3. `N + 1`
-   4. `A + B`
-   5. comparisons in `where`
-3. Поддержать `[T; N]`.
-4. Поддержать indexed structs:
-
-   ```avtan
-   struct Vec<T, const N: Nat> { ... }
-   ```
-
-5. Добавить normalization для простых Nat-выражений.
-6. Добавить unification для const expressions.
-
-Definition of done:
-
-1. `fn push<T, const N: Nat>(Vec<T, N>, T) -> Vec<T, N + 1>` типизируется.
-2. Несовместимые длины дают type error.
-3. Статически известные массивы lower-ятся в Go `[N]T`.
-
-## 12. Этап 9: Proof Obligations И Solver v1
-
-Цель: отделить проверку типов от проверки логических обязательств.
-
-Задачи:
-
-1. Завести IR для obligations:
-   1. preconditions
-   2. postconditions
-   3. refinement predicates
-   4. const `where`
-   5. array/slice bounds
-2. Реализовать классификацию:
-   1. `static`
-   2. `dynamic`
-   3. `rejected`
-3. Реализовать встроенный solver для:
-   1. boolean logic
-   2. linear integer arithmetic
-   3. Nat comparisons
-   4. equality
-   5. length equations
-4. Добавить runtime assertion generation для `dynamic`.
-5. Добавить `#[proof_only]`.
-
-Definition of done:
-
-1. Простые `requires` доказываются на compile-time.
-2. Runtime-dependent `requires` превращаются в Go checks.
-3. Неподдерживаемые доказательства дают честную ошибку, а не ICE.
-
-## 13. Этап 10: Proof И Ghost Syntax
-
-Цель: дать пользователю язык для подсказок компилятору.
-
-Задачи:
-
-1. Добавить `proof fn`.
-2. Добавить `Proof<P>`.
-3. Добавить `ghost let`.
-4. Добавить `prove expr`.
-5. Запретить effects внутри proof-кода.
-6. Стирать proof/ghost при Go lowering.
-
-Definition of done:
-
-1. Proof-код не попадает в Go.
-2. Proof-код не может вызвать IO/spawn/unsafe.
-3. `#[test] proof fn` работает как compile-time test.
-
-## 14. Этап 11: Ownership И Borrowing v1
+## 16. Этап 13: Ownership И Borrowing v1
 
 Цель: ввести Rust-подобную безопасность без попытки полностью скопировать Rust.
 
@@ -404,7 +471,7 @@ Definition of done:
 2. Одновременный `&mut` и `&` запрещен.
 3. Простые borrow-программы lower-ятся в Go pointers/slices.
 
-## 15. Этап 12: Effects
+## 17. Этап 14: Effects
 
 Цель: сделать side effects видимыми и пригодными для proof checker.
 
@@ -423,7 +490,7 @@ Definition of done:
 2. Public function без нужного effects получает диагностику.
 3. Proof checker опирается на effects.
 
-## 16. Этап 13: Concurrency v1
+## 18. Этап 15: Concurrency v1
 
 Цель: реализовать встроенные примитивы многопоточности поверх Go.
 
@@ -452,7 +519,7 @@ Definition of done:
 3. `select` компилируется в валидный Go `select`.
 4. Нельзя отправить non-`Send` значение в другой task.
 
-## 17. Этап 14: Traits И Impl
+## 19. Этап 16: Traits И Impl
 
 Цель: добавить пользовательские абстракции после стабилизации backend.
 
@@ -473,7 +540,7 @@ Definition of done:
 2. Object-safe trait можно передать как interface-like value.
 3. Неполный impl дает диагностику.
 
-## 18. Этап 15: Go Interop
+## 20. Этап 17: Go Interop
 
 Цель: позволить Avtan-коду использовать существующие Go-пакеты.
 
@@ -493,20 +560,26 @@ Definition of done:
 2. Go errors корректно становятся Avtan `Result`.
 3. Неверная interop-сигнатура диагностируется.
 
-## 19. Этап 16: Standard Library v1
+## 21. Этап 18: Standard Library v1
 
 Цель: дать минимальный набор типов, которые нужны языку.
 
 Задачи:
 
 1. Реализовать compiler-known definitions:
-   1. `Option<T>`
-   2. `Result<T, E>`
-   3. `Vec<T>`
-   4. `Task<T, E>`
-   5. `Chan<T>`
-   6. `Mutex<T>`
-   7. `Atomic<T>`
+   1. `Type`
+   2. `Nat`
+   3. propositional equality and `Refl`
+   4. `Dec<P>`
+   5. `Fin<n>`
+   6. `Vect<T, n>`
+   7. `Option<T>`
+   8. `Result<T, E>`
+   9. `Vec<T>`
+   10. `Task<T, E>`
+   11. `Chan<T>`
+   12. `Mutex<T>`
+   13. `Atomic<T>`
 2. Решить, какие типы являются source-level Avtan, а какие intrinsic.
 3. Добавить Go runtime support package, если прямой Go lowering недостаточен.
 4. Добавить prelude.
@@ -517,7 +590,7 @@ Definition of done:
 2. Runtime support versioned вместе с compiler.
 3. Stdlib покрыта integration-тестами.
 
-## 20. Этап 17: Test Runner
+## 22. Этап 19: Test Runner
 
 Цель: сделать `avtan test` полезным для компилятора и пользователей.
 
@@ -543,7 +616,7 @@ Definition of done:
 2. Proof tests проверяются без Go runtime.
 3. Compile-fail fixtures проверяют конкретные error codes.
 
-## 21. Этап 18: Async И Cancellation
+## 23. Этап 20: Async И Cancellation
 
 Цель: стабилизировать async-синтаксис поверх Go-модели.
 
@@ -562,7 +635,7 @@ Definition of done:
 2. Cancellation доходит до child tasks.
 3. Borrow checker ловит mutable borrow across await.
 
-## 22. Этап 19: Unsafe
+## 24. Этап 21: Unsafe
 
 Цель: разрешить низкоуровневые операции только в явно помеченном коде.
 
@@ -581,7 +654,7 @@ Definition of done:
 2. Public unsafe API требует явный `Unsafe` effect.
 3. Backend не генерирует Go `unsafe` без opt-in.
 
-## 23. Этап 20: Оптимизация И Полировка
+## 25. Этап 22: Оптимизация И Полировка
 
 Цель: сделать компилятор приятным и предсказуемым.
 
@@ -604,41 +677,47 @@ Definition of done:
 2. Generated Go можно читать без боли.
 3. Build больших пакетов не пересобирает все без причины.
 
-## 24. Рекомендуемый Порядок Коммитов
+## 26. Рекомендуемый Порядок Коммитов
 
 1. `docs: add language spec and implementation plan`
 2. `compiler: add source files and diagnostics`
 3. `lexer: tokenize avtn source`
-4. `parser: parse mvp items and expressions`
+4. `parser: parse dependent core surface syntax`
 5. `fmt: add formatter`
 6. `resolve: add packages and symbols`
-7. `types: check primitive mvp`
-8. `go: emit basic package`
-9. `go: lower functions structs and enums`
-10. `types: add result and question operator`
-11. `proof: add refinement literal checks`
-12. `proof: add runtime obligations`
-13. `types: add const nat parameters`
-14. `ownership: add move and borrow checks`
-15. `effects: add effect checking`
-16. `concurrency: lower spawn channel select`
-17. `tests: add avtan test runner`
-18. `interop: add explicit go bindings`
+7. `core: add universes pi sigma and erased binders`
+8. `elab: add implicit arguments and holes`
+9. `nbe: add normalization and definitional equality`
+10. `types: check dependent functions and data`
+11. `totality: add coverage and termination checks`
+12. `proof: add equality refl rewrite and proof tests`
+13. `erase: remove proof and type-only terms`
+14. `go: lower erased runtime ir`
+15. `types: add result and question operator`
+16. `ownership: add move and borrow checks`
+17. `effects: add effect checking`
+18. `concurrency: lower spawn channel select`
+19. `tests: add avtan test runner`
+20. `interop: add explicit go bindings`
 
-## 25. Риски
+## 27. Риски
 
 1. Полные зависимые типы могут сделать компилятор слишком сложным.
-   Решение: держать solver-фрагмент ограниченным и разрешать runtime checks.
+   Решение: держать core маленьким, surface syntax elaboration-driven, а Go
+   backend подключать только после erasure.
 2. Ownership поверх Go может стать слишком строгим или слишком слабым.
    Решение: начать с function-local move/borrow checker.
-3. Payload enums в Go могут генерировать много allocation-heavy кода.
+3. Totality checker может отклонять полезные программы.
+   Решение: начать со strict totality для type/proof-кода и разрешать
+   `partial fn` только для runtime.
+4. Payload enums в Go могут генерировать много allocation-heavy кода.
    Решение: сначала readable backend, потом alternative representations.
-4. Async поверх Go может конфликтовать с Go idioms.
+5. Async поверх Go может конфликтовать с Go idioms.
    Решение: сперва реализовать structured concurrency без отдельного runtime.
-5. Go interop может размыть soundness.
+6. Go interop может размыть soundness.
    Решение: все extern-типы требуют явных trait/effect declarations.
 
-## 26. Ближайшие Технические Шаги
+## 28. Ближайшие Технические Шаги
 
 Самый полезный следующий кусок работы:
 

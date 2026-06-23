@@ -17,18 +17,20 @@ Avtan should:
 
 1. Feel familiar to Rust users while producing readable, idiomatic Go output.
 2. Make concurrency explicit, typed, and easier to audit than raw goroutines.
-3. Support a practical subset of dependent typing without requiring a full
-   theorem prover in the compiler.
+3. Provide full Idris-style dependent types through a small total core language,
+   including dependent functions, dependent data types, equality proofs, implicit
+   arguments, elaboration, and proof erasure.
 4. Use ownership and borrowing for local safety, but map predictably to Go's
    garbage-collected runtime.
-5. Preserve source-level invariants in generated Go through a mix of compile-time
-   proofs, generated runtime assertions, and generated wrapper types.
-6. Prefer simple backend rules over clever optimizations in the first versions.
+5. Preserve source-level invariants in generated Go through compile-time proofs,
+   erased evidence, explicit runtime decisions, and generated wrapper types.
+6. Prefer a small, well-specified core calculus over clever surface syntax in the
+   first versions.
 
 Avtan is not trying to be:
 
 1. A drop-in Rust replacement.
-2. A proof assistant.
+2. A standalone proof assistant, even though it has a proof-capable type system.
 3. A Go syntax variant.
 4. A language that exposes unsafe pointer arithmetic as a normal programming
    model.
@@ -39,13 +41,18 @@ The compiler pipeline is:
 
 1. Parse Avtan source into an AST.
 2. Resolve names, modules, imports, and type aliases.
-3. Elaborate dependent types and refinement predicates into an internal core.
-4. Type-check ordinary types, ownership, effects, and concurrency capabilities.
-5. Discharge compile-time proofs using normalization and a bounded SMT-like
-   solver.
-6. Insert runtime checks where the spec allows unresolved dynamic obligations.
-7. Lower Avtan core to Go AST.
-8. Format and emit Go modules.
+3. Elaborate surface syntax into a dependently typed core with implicit
+   arguments, metavariables, holes, erased arguments, and explicit binders.
+4. Type-check core terms using normalization, definitional equality,
+   higher-order unification where required by elaboration, and universe checking.
+5. Check totality, termination, and coverage for definitions used in types or
+   proofs.
+6. Type-check ownership, effects, and concurrency capabilities for the runtime
+   fragment.
+7. Erase proofs, implicit-only terms, compile-time indices, and other
+   non-runtime evidence.
+8. Lower the erased runtime core to Go AST.
+9. Format and emit Go modules.
 
 The generated Go is part of the public contract. A user should be able to inspect
 and debug it. Generated names may be mangled, but must be deterministic.
@@ -102,17 +109,17 @@ Naming conventions:
 Reserved keywords:
 
 ```text
-as async await borrow box break chan const continue defer do else enum effect
-false fn for if impl import in let loop match mod move mut package proof pub
-recv ref return select send spawn static struct trait true type unsafe use
+as async await borrow box break chan const continue data defer do else enum
+effect false fn for if impl import in let loop match mod move mut package proof
+pub recv ref return select send spawn static struct trait true type unsafe use
 where while yield
 ```
 
 Contextual keywords:
 
 ```text
-cap closed ensures forall ghost given invariant linear post pre requires
-shared terminates unique
+auto cap closed erased ensures forall ghost given implicit impossible invariant
+linear partial post pre requires rewrite shared terminates total unique with
 ```
 
 ## 4. Modules And Packages
@@ -193,12 +200,11 @@ let fixed: [i32; 4] = [1, 2, 3, 4]
 let view: []i32 = fixed.as_slice()
 ```
 
-Fixed arrays may carry length as a type-level natural:
+Fixed arrays may carry length as an ordinary value-level natural that appears in
+the type:
 
 ```avtan
-fn first<const N: Nat>(xs: [i32; N]) -> i32
-where
-    N > 0
+fn first {n: Nat} (xs: [i32; S(n)]) -> i32
 {
     xs[0]
 }
@@ -206,7 +212,7 @@ where
 
 Go lowering:
 
-1. `[T; N]` lowers to `[N]T` when `N` is statically known.
+1. `[T; n]` lowers to `[n]T` when `n` is statically known after elaboration.
 2. `[]T` lowers to `[]T`.
 3. Dependent slice lengths lower to wrapper structs when the length must be
    preserved dynamically.
@@ -323,26 +329,37 @@ fn map<T, U>(xs: []T, f: fn(T) -> U) -> []U {
 }
 ```
 
-Generic functions lower to Go generics when possible. If a dependent parameter
-cannot be represented by Go generics, the compiler monomorphizes or emits a
-wrapper.
+Generic functions lower to Go generics when possible. If a dependent parameter is
+erased, it does not appear in generated Go. If a runtime-relevant dependent
+parameter cannot be represented by Go generics, the compiler monomorphizes or
+emits a wrapper.
 
-### 6.3 Const Parameters
+### 6.3 Dependent Parameters
+
+Avtan supports explicit, implicit, auto-implicit, and erased parameters.
 
 ```avtan
-fn chunk<const N: Nat>(bytes: []u8) -> Vec<[u8; N]>
-where
-    N > 0
+fn id {A: Type} (x: A) -> A = x
+
+fn head {A: Type} {n: Nat} (xs: Vect<A, S(n)>) -> A
+
+fn chunk {n: Nat} (bytes: Vect<u8, n>) (size: Nat)
+    -> (count: Nat ** Vect<Vect<u8, size>, count>)
+requires size > 0
 ```
 
-Const parameters are available to type-level expressions. MVP const parameters
-support:
+Parameter forms:
 
-1. `Nat`
-2. `Int`
-3. `Bool`
-4. fieldless enums
-5. string literals for labels and protocol states
+1. `(x: A)`: explicit runtime or compile-time parameter.
+2. `{x: A}`: implicit parameter inferred by elaboration.
+3. `{auto p: P}`: implicit proof found by proof search.
+4. `{erased x: A}`: compile-time-only parameter removed before Go lowering.
+
+The core type of a dependent function is a Pi type:
+
+```avtan
+(x: A) -> B(x)
+```
 
 ## 7. Expressions
 
@@ -537,149 +554,262 @@ Hash
 
 `Sync` means shared references to a value may be used concurrently.
 
-## 11. Dependent And Refinement Types
+## 11. Full Dependent Types
 
-Avtan supports dependent types in a deliberately restricted fragment.
+Avtan has full Idris-style dependent types. Values may appear in types, functions
+may return types that mention their arguments, and proofs are ordinary total
+programs whose results are erased before Go generation when they have no runtime
+content.
 
-The compiler must always terminate while type-checking ordinary programs. It may
-reject true statements that are outside the supported proof fragment.
+The surface language is Rust-like, but the semantic core is a small dependently
+typed lambda calculus with algebraic data, universes, Pi types, Sigma types,
+equality, implicit arguments, holes, and erasure annotations.
 
-### 11.1 Refinement Types
+### 11.1 Universes
 
-A refinement type restricts values with a predicate. It has the same runtime
-representation as the base type, but a distinct static type.
-
-```avtan
-type NonZeroI64 = i64 where self != 0
-type Port = u16 where self > 0 && self <= 65535
-```
-
-Construction:
+Types live in a cumulative hierarchy:
 
 ```avtan
-let port: Port = Port::new(8080)?
+Type 0 : Type 1
+Type 1 : Type 2
+Type n : Type (n + 1)
 ```
 
-For literal or proven values:
+`Type` without an explicit level means an inferred universe level. Avtan does not
+allow `Type : Type`.
+
+### 11.2 Pi Types And Dependent Functions
+
+A function type may bind a value and use it in the return type.
 
 ```avtan
-let port: Port = 8080
+(x: A) -> B(x)
 ```
 
-Runtime construction returns `Result<Port, RefinementError>` unless the caller
-uses an explicit checked assertion:
+Surface function syntax elaborates to Pi types:
 
 ```avtan
-let port = assume<Port>(raw)
+fn id {A: Type} (x: A) -> A = x
+
+fn head {A: Type} {n: Nat} (xs: Vect<A, S(n)>) -> A
 ```
 
-`assume` requires `unsafe proof`.
+The parameter `{n: Nat}` is implicit: callers normally write `head(xs)`, and the
+elaborator infers `n` from the type of `xs`.
 
-### 11.2 Indexed Types
+### 11.3 Sigma Types And Dependent Pairs
 
-Types may be indexed by compile-time values.
+Sigma types carry a value together with another value whose type depends on the
+first value.
 
 ```avtan
-struct Vec<T, const N: Nat> {
-    data: []T,
-}
-where
-    data.len() == N
+(x: A ** B(x))
 ```
-
-Examples:
-
-```avtan
-fn push<T, const N: Nat>(xs: Vec<T, N>, x: T) -> Vec<T, N + 1>
-
-fn append<T, const A: Nat, const B: Nat>(
-    left: Vec<T, A>,
-    right: Vec<T, B>,
-) -> Vec<T, A + B>
-```
-
-### 11.3 Value-Dependent Function Types
-
-Function return types may reference arguments.
-
-```avtan
-fn take<T>(xs: []T, n: usize) -> Slice<T>
-requires n <= xs.len()
-ensures result.len() == n
-```
-
-MVP syntax keeps value dependencies in `requires` and `ensures` rather than
-allowing arbitrary expression syntax inside every type.
-
-### 11.4 Proof Values
-
-Proof values exist only at compile time and do not lower to Go.
-
-```avtan
-proof fn len_append<T, const A: Nat, const B: Nat>(
-    left: Vec<T, A>,
-    right: Vec<T, B>,
-) -> Proof<append(left, right).len() == A + B>
-```
-
-Rules:
-
-1. `proof fn` cannot perform IO.
-2. `proof fn` cannot spawn tasks.
-3. `proof fn` cannot inspect runtime-only values.
-4. `proof fn` must terminate.
-
-### 11.5 Ghost Values
-
-Ghost values support proofs without runtime representation.
-
-```avtan
-ghost let original_len = xs.len()
-xs.push(item)
-prove xs.len() == original_len + 1
-```
-
-Ghost values cannot affect runtime control flow.
-
-### 11.6 Solver Fragment
-
-The required solver fragment includes:
-
-1. Boolean logic.
-2. Linear integer arithmetic.
-3. Natural number comparisons.
-4. Equality over uninterpreted symbols.
-5. Algebraic datatype constructor equality.
-6. Finite enum reasoning.
-7. Length reasoning for arrays, slices, strings, and vectors.
-
-The compiler may support additional theories, but portable packages must not
-depend on them unless declared in the manifest.
-
-### 11.7 Dynamic Obligations
-
-When a proof depends on runtime data, the compiler classifies the obligation:
-
-1. `static`: proven at compile time.
-2. `dynamic`: checked at runtime.
-3. `rejected`: cannot be checked soundly or cheaply enough.
 
 Example:
 
 ```avtan
-fn get(xs: []i32, i: usize) -> i32
-requires i < xs.len()
-{
-    xs[i]
+fn read_vec<T>(path: Path) -> Result<(n: Nat ** Vect<T, n>), IoError>
+```
+
+Go lowering keeps only runtime-relevant fields. Erased proof fields are removed.
+
+### 11.4 Dependent Data Types
+
+Dependent data declarations may define type families indexed by values.
+
+```avtan
+data Nat: Type {
+    Z: Nat,
+    S: Nat -> Nat,
 }
 
-fn caller(xs: []i32, i: usize) -> i32 {
-    get(xs, i) // inserts runtime check unless caller proves the precondition
+data Vect(A: Type): Nat -> Type {
+    Nil: Vect(A, Z),
+    Cons: (n: Nat, head: A, tail: Vect(A, n)) -> Vect(A, S(n)),
 }
 ```
 
-Generated Go must preserve runtime checks unless compiled with an explicit
-unchecked profile.
+The compiler also accepts Rust-like generic spelling for common indexed types:
+
+```avtan
+fn append {A: Type} {m: Nat} {n: Nat}
+    (left: Vect<A, m>, right: Vect<A, n>) -> Vect<A, m + n>
+```
+
+Constructor result types may refine indices, as in `Nil: Vect(A, Z)` and
+`Cons: ... -> Vect(A, S(n))`.
+
+### 11.5 Equality, Refl, And Rewrite
+
+Propositional equality is an ordinary type:
+
+```avtan
+x = y
+```
+
+`Refl` proves equality when both sides normalize to the same core term.
+
+```avtan
+proof fn plus_zero_right(n: Nat) -> n + Z = n {
+    match n {
+        Z => Refl,
+        S(k) => rewrite plus_zero_right(k) in Refl,
+    }
+}
+```
+
+`rewrite proof in expr` rewrites the expected type of `expr` using an equality
+proof.
+
+### 11.6 Dependent Pattern Matching
+
+Pattern matching refines the types of branch bodies.
+
+```avtan
+fn head {A: Type} {n: Nat} (xs: Vect<A, S(n)>) -> A {
+    match xs {
+        Cons(_, x, _) => x,
+    }
+}
+```
+
+Impossible branches are allowed when the context is contradictory:
+
+```avtan
+fn absurd_head {A: Type} (xs: Vect<A, Z>) -> A {
+    match xs {
+        Nil => impossible,
+    }
+}
+```
+
+The compiler performs coverage checking for all total definitions.
+
+### 11.7 Totality And Termination
+
+Definitions used in types, proofs, erased arguments, or compile-time computation
+must be total.
+
+```avtan
+total fn plus(a: Nat, b: Nat) -> Nat {
+    match a {
+        Z => b,
+        S(k) => S(plus(k, b)),
+    }
+}
+```
+
+Runtime-only general recursion is allowed only in `partial fn` definitions.
+`partial fn` results cannot be used by the type checker as compile-time values.
+
+The totality checker must support at least:
+
+1. Structural recursion.
+2. Lexicographic recursion.
+3. Mutual recursion with size-change analysis.
+4. Coverage checking for pattern matches.
+
+### 11.8 Implicit Arguments, Auto Search, And Holes
+
+The elaborator inserts implicit arguments, solves metavariables, and reports
+unsolved holes.
+
+```avtan
+fn map {A: Type} {B: Type} {n: Nat}
+    (f: A -> B, xs: Vect<A, n>) -> Vect<B, n>
+
+let ys = map(double, xs)
+```
+
+Auto implicits request proof search:
+
+```avtan
+fn safe_index {A: Type} {n: Nat}
+    (xs: Vect<A, n>, i: Fin<n>, {auto p: InBounds(i, n)}) -> A
+```
+
+Typed holes are allowed during development:
+
+```avtan
+let proof = ?missing_proof
+```
+
+The compiler reports each hole with its context and expected type.
+
+### 11.9 Erasure
+
+Arguments and fields that exist only for type checking are erased before Go
+lowering.
+
+```avtan
+fn length {A: Type} {erased n: Nat} (xs: Vect<A, n>) -> Nat
+```
+
+Erasure rules:
+
+1. Types, proofs, implicit-only evidence, and erased parameters do not lower to
+   Go.
+2. Runtime-relevant indices lower to Go fields or arguments.
+3. Erased values cannot affect runtime control flow.
+4. A value may be erased only if the erasure checker proves it is irrelevant at
+   runtime.
+
+### 11.10 Refinements As Dependent Types
+
+Refinement types are syntactic sugar over dependent pairs plus a proof.
+
+```avtan
+type Port = (value: u16 ** value > 0 && value <= 65535)
+```
+
+The ergonomic spelling is still allowed:
+
+```avtan
+type Port = u16 where self > 0 && self <= 65535
+```
+
+Construction from runtime data requires a decision procedure:
+
+```avtan
+fn parse_port(raw: u16) -> Result<Port, RefinementError> {
+    decide raw > 0 && raw <= 65535
+}
+```
+
+Unchecked construction requires `unsafe proof`.
+
+### 11.11 Contracts And Runtime Decisions
+
+Full dependent types do not mean the compiler silently proves arbitrary runtime
+facts. If a proof is required, it must be produced by elaboration, user code,
+normalization, auto search, or an explicit decision procedure.
+
+`requires` and `ensures` are contract syntax over dependent propositions:
+
+```avtan
+fn get<T>(xs: []T, i: usize) -> T
+requires i < xs.len()
+```
+
+When a caller has no proof, the compiler may insert a runtime decision only for
+contracts declared decidable. Otherwise the program is rejected until the caller
+passes or constructs evidence.
+
+### 11.12 Go Lowering
+
+Only the erased runtime fragment lowers to Go.
+
+Go lowering must happen after:
+
+1. Elaboration.
+2. Type checking.
+3. Totality and coverage checks.
+4. Ownership and effect checks.
+5. Erasure.
+
+If a dependent value is runtime-relevant, it is represented explicitly in Go. If
+it is type-only evidence, it is removed.
 
 ## 12. Effects
 
@@ -872,14 +1002,14 @@ enum Handshake {
     Closed,
 }
 
-struct Conn<const S: Handshake> {
+struct Conn(state: Handshake) {
     raw: TcpConn,
 }
 
 fn auth(conn: Conn<Handshake::Start>, token: Token)
     -> Result<Conn<Handshake::Authed>, AuthError>
 
-fn close<const S: Handshake>(conn: Conn<S>) -> Conn<Handshake::Closed>
+fn close(state: Handshake, conn: Conn<state>) -> Conn<Handshake::Closed>
 ```
 
 This is the preferred pattern for compile-time protocol safety.
@@ -967,6 +1097,11 @@ Required packages:
 
 ```text
 std.core
+std.nat
+std.vect
+std.fin
+std.equality
+std.dec
 std.result
 std.option
 std.vec
@@ -984,6 +1119,13 @@ std.proof
 Required core types:
 
 ```text
+Type
+Nat
+Fin<n>
+Vect<T, n>
+Dec<P>
+x = y
+Refl
 Option<T>
 Result<T, E>
 Vec<T>
@@ -1070,7 +1212,7 @@ Proof tests are compile-time tests:
 ```avtan
 #[test]
 proof fn push_increases_len() {
-    let xs: Vec<i32, 3> = vec![1, 2, 3]
+    let xs: Vect<i32, 3> = vect![1, 2, 3]
     let ys = xs.push(4)
     prove ys.len() == 4
 }
@@ -1092,9 +1234,16 @@ module = "github.com/acme/example"
 target = "1.22"
 contracts = "debug"
 
-[solver]
-runtime_checks = true
-max_steps = 100000
+[elaboration]
+max_holes = 256
+auto_search_depth = 8
+
+[totality]
+required = true
+max_reduction_steps = 100000
+
+[contracts]
+runtime_decisions = true
 ```
 
 The Rust implementation of the compiler may still use `Cargo.toml`; `avtan.toml`
@@ -1155,30 +1304,36 @@ fn serve(port: Port, rx: RecvChan<Request>, tx: SendChan<Response>)
 
 ## 23. Initial MVP
 
-The first implementation should target a smaller useful subset:
+The first implementation should be a vertical slice of the full dependent type
+architecture, not a separate simply typed language.
+
+Required in the first dependent-core MVP:
 
 1. Lexer, parser, formatter, and AST.
-2. Packages, imports, functions, structs, fieldless enums, and simple
-   payload-carrying enums.
-3. Primitive types, arrays, slices, tuples, and `Result`.
-4. Basic generics and const `Nat` parameters.
-5. Refinement aliases with literal proofs and generated runtime constructors.
-6. `requires` checks at call sites.
-7. Exhaustive `match`.
-8. Source-level ownership moves and simple immutable/mutable borrowing.
-9. `spawn`, `Task`, `Chan`, `select`, and `TaskGroup`.
-10. Go code generation for the subset above.
-11. Go interop for simple functions and `(T, error)` results.
-12. Test generation to Go `testing`.
+2. Packages, imports, functions, structs, simple enums, and dependent `data`
+   declarations.
+3. Core terms for universes, variables, lambdas, Pi types, applications, lets,
+   constructors, case trees, holes, and erased arguments.
+4. Elaboration from surface syntax into core with implicit arguments and
+   metavariables.
+5. Normalization by evaluation or another explicit normalization strategy.
+6. Definitional equality and unification for elaboration.
+7. Built-in `Nat`, propositional equality, `Refl`, and `rewrite`.
+8. Dependent `Vect<A, n>` example compiling and type-checking.
+9. Coverage and structural termination checks for total functions.
+10. Erasure of proofs, implicit-only terms, and compile-time indices.
+11. Go code generation for the erased runtime fragment.
+12. Test generation to Go `testing` plus compile-time proof tests.
 
-Features explicitly not required in MVP:
+Features explicitly not required in the first dependent-core MVP:
 
 1. Full trait objects.
-2. Higher-rank lifetimes.
-3. General recursive proof functions.
-4. Session-typed channels beyond const enum state parameters.
+2. Advanced proof automation or tactics.
+3. Coinduction and codata.
+4. General partial functions inside types.
 5. Backend `unsafe`.
 6. Custom async runtimes.
+7. Optimized Go representation for every dependent data encoding.
 
 ## 24. Open Design Questions
 
@@ -1190,7 +1345,7 @@ Features explicitly not required in MVP:
    are involved?
 4. How much Go interop should be automatic versus generated through explicit
    binding files?
-5. Should dependency solving be embedded in the compiler, delegated to an
+5. Should optional proof automation be built into the compiler, delegated to an
    external solver, or support both?
 6. Should `async` be part of the MVP syntax if the first backend uses blocking
    goroutines?
