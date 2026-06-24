@@ -11,14 +11,23 @@ erasure и только затем Go lowering.
 
 ## 1. Целевой MVP
 
-Первый пригодный результат:
+Первый пригодный результат - это не полный package manager, а вертикальный
+компиляторный путь:
 
-1. CLI-команда `avtan build`.
-2. Чтение `avtan.toml`.
-3. Парсинг одного пакета из `.avtn` файлов.
-4. Диагностики с позициями в исходнике.
-5. AST для функций, Rust-like `struct`/`enum`, выражений, `match`, dependent
+```text
+single-file .avtn -> parse -> local HIR -> dependent core -> typecheck ->
+erasure -> Go output -> go run
+```
+
+Обязательный MVP:
+
+1. CLI-команды `avtan check`, `avtan build` и `avtan run`.
+2. Парсинг одного `.avtn` файла без package graph и без обязательных imports.
+3. Диагностики с позициями в исходнике.
+4. AST для функций, Rust-like `struct`/`enum`, выражений, `match`, dependent
    generic params, holes, equality proofs и `rewrite`.
+5. Local HIR/symbol table для одного файла: type/value namespaces, binders,
+   enum constructors, function names.
 6. Dependent core с universes, Pi, Sigma, lambdas, applications, constructors,
    case trees и erased binders.
 7. Elaboration из surface syntax в core.
@@ -27,10 +36,27 @@ erasure и только затем Go lowering.
 10. Coverage и structural termination для total definitions.
 11. Erasure proof/type-only значений.
 12. Генерация читаемого Go-кода из erased runtime core.
-13. Компиляция примера `Nat`, `Vect`, `head`, `append`.
+13. Запуск обычной программы через `avtan run`.
+14. Компиляция примеров:
+    1. `hello/main`
+    2. арифметика и `if`
+    3. `Nat`
+    4. `Vect`
+    5. `head`
+    6. `append`
 
-Все остальные фичи считаются post-MVP, пока этот dependent-core slice не работает
-end-to-end.
+Отложено до конца vertical slice:
+
+1. Imports и aliases.
+2. `avtan.toml`.
+3. Package graph и multi-file packages.
+4. Go interop.
+5. Полный formatter.
+6. Ownership/borrowing.
+7. Effects и concurrency primitives.
+
+Все остальные фичи считаются post-MVP, пока dependent-core -> Go -> run slice не
+работает end-to-end.
 
 ## 2. Архитектура Компилятора
 
@@ -174,11 +200,12 @@ Definition of done:
 
 Текущее состояние:
 
-1. Сделано: parser покрывает package/imports, attributes, Rust-like `struct` и
-   `enum`, dependent generics `const N: Nat`, variant `where`, `fn`/`proof fn`,
-   blocks, `let`, `if`, `match`, `for`, `while`, `loop`, `return`, `break`,
-   `continue`, calls, field access, indexing, holes, `rewrite`, `impossible`,
-   `requires`, `ensures`, explicit, implicit, auto и erased binders.
+1. Сделано: parser покрывает package/imports как surface syntax, attributes,
+   Rust-like `struct` и `enum`, dependent generics `const N: Nat`, variant
+   `where`, `fn`/`proof fn`, blocks, `let`, `if`, `match`, `for`, `while`,
+   `loop`, `return`, `break`, `continue`, calls, field access, indexing, holes,
+   `rewrite`, `impossible`, `requires`, `ensures`, explicit, implicit, auto и
+   erased binders. Семантика imports отложена до позднего этапа.
 2. Сделано: добавлен стабильный AST dump для CLI и parser fixture-тестов.
 3. Осталось: более сильный error recovery и расширение snapshot-набора на
    negative recovery-кейсы.
@@ -219,28 +246,11 @@ Definition of done:
 2. Ошибки в одном item не ломают парсинг всего файла.
 3. AST можно сериализовать в debug-вид для тестов.
 
-## 6. Этап 3: Formatter
+## 6. Этап 3: Local HIR И Resolve Без Imports
 
-Цель: стабилизировать синтаксис до появления сложной семантики.
-
-Задачи:
-
-1. Реализовать pretty-printer из AST.
-2. Зафиксировать правила:
-   1. 4 пробела для отступов.
-   2. trailing commas в многострочных структурах.
-   3. одно item-разделение пустой строкой.
-3. Добавить `avtan fmt --check`.
-4. Добавить round-trip тесты: parse -> format -> parse.
-
-Definition of done:
-
-1. Formatter идемпотентен.
-2. `avtan fmt --check` возвращает non-zero при отличиях.
-
-## 7. Этап 4: Name Resolution И Пакеты
-
-Цель: превратить AST в HIR с разрешенными именами.
+Цель: превратить AST одного файла в HIR, который уже готов для dependent-core
+elaboration. На этом этапе намеренно не делаем imports, aliases, package graph и
+multi-file resolution.
 
 Текущее состояние:
 
@@ -251,25 +261,30 @@ Definition of done:
    `<const N: Nat>` становится erased value binder.
 3. Сделано: `avtan resolve <file.avtn>` печатает symbol table для ручной
    проверки.
-4. Осталось: реальный lookup путей, imports/aliases, package graph, multi-file
-   scopes и диагностики unknown names.
 
 Задачи:
 
-1. Реализовать `avtan.toml`.
-2. Добавить package graph.
-3. Разрешать локальные имена, imports, aliases и `pub`.
-4. Разрешать type namespace и value namespace отдельно.
-5. Детектировать циклы импортов.
-6. Подготовить symbol table для type checker.
+1. Разрешать локальные имена в пределах одного файла:
+   1. type namespace
+   2. value namespace
+   3. constructor namespace как value symbols
+   4. binder scopes для функций, generic params и Pi types
+2. Заменить HIR paths на resolved references там, где имя локальное.
+3. Добавить diagnostics:
+   1. duplicate local symbol
+   2. unknown local name
+   3. wrong namespace, например value используется как type
+4. Подготовить HIR telescope для elaboration.
+5. Сохранить surface expressions в HIR там, где elaboration еще не готов.
 
 Definition of done:
 
-1. Несколько `.avtn` файлов в одном пакете видят друг друга.
-2. Ошибка неизвестного имени указывает ближайшие похожие имена.
-3. Циклический импорт диагностируется.
+1. `Nat`, `Vect`, `head`, `append` из одного файла дают HIR без unresolved
+   локальных имен.
+2. Type/value namespace разделены.
+3. Имя binder-а видно в dependent return type.
 
-## 8. Этап 5: Dependent Core IR
+## 7. Этап 4: Dependent Core IR
 
 Цель: реализовать маленькое ядро, в которое будет elaboration всего surface
 языка.
@@ -300,7 +315,7 @@ Definition of done:
 2. Все binders имеют explicit/implicit/auto/erased режим.
 3. Core terms печатаются с человекочитаемыми именами.
 
-## 9. Этап 6: Elaboration
+## 8. Этап 5: Elaboration
 
 Цель: переводить Rust-like surface syntax в полный dependent core.
 
@@ -329,7 +344,7 @@ Definition of done:
 2. `head(xs)` восстанавливает implicit length index.
 3. Unsolved hole показывает локальный context.
 
-## 10. Этап 7: Normalization И Definitional Equality
+## 9. Этап 6: Normalization И Definitional Equality
 
 Цель: сделать проверку типов зависимой от вычисления программ в типах.
 
@@ -351,7 +366,7 @@ Definition of done:
 2. `Refl` принимается только когда стороны definitionally equal.
 3. Ошибки equality показывают нормализованные формы.
 
-## 11. Этап 8: Dependent Type Checker
+## 10. Этап 7: Dependent Type Checker
 
 Цель: проверять полные зависимые типы, а не отдельный набор const-параметров.
 
@@ -372,7 +387,7 @@ Definition of done:
 2. `head: Vect<A, S(n)> -> A` не требует runtime bounds check.
 3. Неверный индекс длины дает type error до Go lowering.
 
-## 12. Этап 9: Coverage И Totality
+## 11. Этап 8: Coverage И Totality
 
 Цель: гарантировать soundness вычислений, используемых в типах и proofs.
 
@@ -394,27 +409,7 @@ Definition of done:
 2. Очевидная structural recursion принимается.
 3. General recursion разрешена только runtime-only `partial fn`.
 
-## 13. Этап 10: Proof Syntax, Equality И Search
-
-Цель: дать пользовательский Idris-like proof experience поверх dependent core.
-
-Задачи:
-
-1. Добавить `proof fn` как total erased function.
-2. Добавить equality proofs через `Refl`.
-3. Добавить `rewrite`.
-4. Добавить `ghost let` как erased let.
-5. Добавить `prove expr` как проверку proposition expression.
-6. Добавить `{auto p: P}` и ограниченный proof search.
-7. Поддержать `#[test] proof fn`.
-
-Definition of done:
-
-1. Proof-код не попадает в Go.
-2. Proof-код не может вызвать IO/spawn/unsafe.
-3. `plus_zero_right` доказывается pattern matching + rewrite.
-
-## 14. Этап 11: Erasure
+## 12. Этап 9: Erasure
 
 Цель: получить runtime-only IR перед Go backend.
 
@@ -438,40 +433,67 @@ Definition of done:
 2. Erased proof branch не влияет на Go output.
 3. Go backend получает только erased IR.
 
-## 15. Этап 12: Go Backend v1
+## 13. Этап 10: Go Backend v1 И Запуск Программ
 
-Цель: сгенерировать читаемый Go из erased runtime IR.
+Цель: сгенерировать читаемый Go из erased runtime IR и запускать результат.
 
 Задачи:
 
 1. Создать Go AST:
    1. package
-   2. imports
-   3. structs
-   4. interfaces
-   5. functions
-   6. statements
-   7. expressions
+   2. structs
+   3. interfaces
+   4. functions
+   5. statements
+   6. expressions
 2. Реализовать printer Go AST.
 3. Прогонять результат через `gofmt`.
-4. Lowering:
-   1. Avtan package -> Go package
+4. Lowering v1:
+   1. one-file Avtan module -> one Go package
    2. `str` -> `string`
    3. numeric primitives -> Go numeric types
-   4. erased structs/enums -> Go structs/interfaces
-   5. fieldless enums -> Go constants
+   4. structs -> Go structs
+   5. fieldless enums -> Go constants or tagged values
    6. payload enums -> interface + variant structs
-   7. `Result<T, E>` -> `(T, error)` для Go-friendly функций
-   8. `?` -> early return
-5. Добавить integration-тесты: `.avtn` -> erased IR -> `.go` -> `go test`.
+   7. functions -> Go functions
+   8. `main` -> Go `main`
+5. Добавить CLI:
+   1. `avtan build <file.avtn> -o <dir>`
+   2. `avtan run <file.avtn>`
+   3. `avtan emit-go <file.avtn>`
+6. Добавить integration-тесты:
+   1. `.avtn` -> `.go`
+   2. `.avtn` -> `go run`
+   3. dependent proofs erased from generated Go
 
 Definition of done:
 
-1. Компилятор генерирует Go-пакет из erased IR.
-2. Сгенерированный код проходит `gofmt`.
+1. `hello.avtn` запускается через `avtan run`.
+2. Простая программа с `struct`, `enum`, `match`, `if`, арифметикой
+   компилируется в Go.
 3. `Nat`/`Vect` proof code не попадает в Go.
 
-## 16. Этап 13: Ownership И Borrowing v1
+## 14. Этап 11: Proof Syntax, Equality И Search
+
+Цель: дать пользовательский Idris-like proof experience поверх dependent core.
+
+Задачи:
+
+1. Добавить `proof fn` как total erased function.
+2. Добавить equality proofs через `Refl`.
+3. Добавить `rewrite`.
+4. Добавить `ghost let` как erased let.
+5. Добавить `prove expr` как проверку proposition expression.
+6. Добавить `{auto p: P}` и ограниченный proof search.
+7. Поддержать `#[test] proof fn`.
+
+Definition of done:
+
+1. Proof-код не попадает в Go.
+2. Proof-код не может вызвать IO/spawn/unsafe.
+3. `plus_zero_right` доказывается pattern matching + rewrite.
+
+## 15. Этап 12: Ownership И Borrowing v1
 
 Цель: ввести Rust-подобную безопасность без попытки полностью скопировать Rust.
 
@@ -494,7 +516,7 @@ Definition of done:
 2. Одновременный `&mut` и `&` запрещен.
 3. Простые borrow-программы lower-ятся в Go pointers/slices.
 
-## 17. Этап 14: Effects
+## 16. Этап 13: Effects
 
 Цель: сделать side effects видимыми и пригодными для proof checker.
 
@@ -513,7 +535,7 @@ Definition of done:
 2. Public function без нужного effects получает диагностику.
 3. Proof checker опирается на effects.
 
-## 18. Этап 15: Concurrency v1
+## 17. Этап 14: Concurrency v1
 
 Цель: реализовать встроенные примитивы многопоточности поверх Go.
 
@@ -542,7 +564,7 @@ Definition of done:
 3. `select` компилируется в валидный Go `select`.
 4. Нельзя отправить non-`Send` значение в другой task.
 
-## 19. Этап 16: Traits И Impl
+## 18. Этап 15: Traits И Impl
 
 Цель: добавить пользовательские абстракции после стабилизации backend.
 
@@ -563,27 +585,36 @@ Definition of done:
 2. Object-safe trait можно передать как interface-like value.
 3. Неполный impl дает диагностику.
 
-## 20. Этап 17: Go Interop
+## 19. Этап 16: Imports, Packages И Go Interop
 
-Цель: позволить Avtan-коду использовать существующие Go-пакеты.
+Цель: добавить то, что мы сознательно пропускаем до runnable vertical slice:
+imports, aliases, package graph, `avtan.toml`, multi-file packages и interop с
+существующими Go-пакетами.
 
 Задачи:
 
-1. Поддержать `import go "path" as alias`.
-2. Поддержать `extern go { ... }`.
-3. Маппить `(T, error)` в `Result<T, error>`.
-4. Маппить `error` в `Result<(), error>`.
-5. Описывать внешние Go-типы как opaque.
-6. Требовать ручные `Send`/`Sync` declarations для extern types.
-7. Генерировать Go imports без конфликтов имен.
+1. Реализовать `avtan.toml`.
+2. Добавить package graph.
+3. Разрешать imports, grouped imports и aliases.
+4. Поддержать multi-file packages.
+5. Детектировать циклы импортов.
+6. Поддержать `import go "path" as alias`.
+7. Поддержать `extern go { ... }`.
+8. Маппить `(T, error)` в `Result<T, error>`.
+9. Маппить `error` в `Result<(), error>`.
+10. Описывать внешние Go-типы как opaque.
+11. Требовать ручные `Send`/`Sync` declarations для extern types.
+12. Генерировать Go imports без конфликтов имен.
 
 Definition of done:
 
-1. Можно вызвать `net/http` через explicit binding.
-2. Go errors корректно становятся Avtan `Result`.
-3. Неверная interop-сигнатура диагностируется.
+1. Несколько `.avtn` файлов в одном пакете видят друг друга.
+2. Циклический импорт диагностируется.
+3. Можно вызвать `net/http` через explicit binding.
+4. Go errors корректно становятся Avtan `Result`.
+5. Неверная interop-сигнатура диагностируется.
 
-## 21. Этап 18: Standard Library v1
+## 20. Этап 17: Standard Library v1
 
 Цель: дать минимальный набор типов, которые нужны языку.
 
@@ -613,7 +644,7 @@ Definition of done:
 2. Runtime support versioned вместе с compiler.
 3. Stdlib покрыта integration-тестами.
 
-## 22. Этап 19: Test Runner
+## 21. Этап 18: Test Runner
 
 Цель: сделать `avtan test` полезным для компилятора и пользователей.
 
@@ -639,7 +670,7 @@ Definition of done:
 2. Proof tests проверяются без Go runtime.
 3. Compile-fail fixtures проверяют конкретные error codes.
 
-## 23. Этап 20: Async И Cancellation
+## 22. Этап 19: Async И Cancellation
 
 Цель: стабилизировать async-синтаксис поверх Go-модели.
 
@@ -658,7 +689,7 @@ Definition of done:
 2. Cancellation доходит до child tasks.
 3. Borrow checker ловит mutable borrow across await.
 
-## 24. Этап 21: Unsafe
+## 23. Этап 20: Unsafe
 
 Цель: разрешить низкоуровневые операции только в явно помеченном коде.
 
@@ -677,22 +708,24 @@ Definition of done:
 2. Public unsafe API требует явный `Unsafe` effect.
 3. Backend не генерирует Go `unsafe` без opt-in.
 
-## 25. Этап 22: Оптимизация И Полировка
+## 24. Этап 21: Formatter, Оптимизация И Полировка
 
-Цель: сделать компилятор приятным и предсказуемым.
+Цель: сделать компилятор приятным и предсказуемым после runnable vertical slice.
 
 Задачи:
 
-1. Улучшить диагностики.
-2. Добавить подсказки `did you mean`.
-3. Добавить incremental cache для пакетов.
-4. Добавить backend flags:
+1. Реализовать formatter и `avtan fmt --check`.
+2. Добавить round-trip тесты: parse -> format -> parse.
+3. Улучшить диагностики.
+4. Добавить подсказки `did you mean`.
+5. Добавить incremental cache для пакетов.
+6. Добавить backend flags:
    1. readable Go
    2. optimized Go
    3. debug contracts
    4. unchecked contracts
-5. Добавить LSP skeleton.
-6. Добавить документацию по языку.
+7. Добавить LSP skeleton.
+8. Добавить документацию по языку.
 
 Definition of done:
 
@@ -700,30 +733,31 @@ Definition of done:
 2. Generated Go можно читать без боли.
 3. Build больших пакетов не пересобирает все без причины.
 
-## 26. Рекомендуемый Порядок Коммитов
+## 25. Рекомендуемый Порядок Коммитов
 
 1. `docs: add language spec and implementation plan`
 2. `compiler: add source files and diagnostics`
 3. `lexer: tokenize avtn source`
 4. `parser: parse dependent core surface syntax`
-5. `fmt: add formatter`
-6. `resolve: add packages and symbols`
+5. `resolve: add local hir symbols and binders`
+6. `resolve: resolve local paths without imports`
 7. `core: add universes pi sigma and erased binders`
-8. `elab: add implicit arguments and holes`
+8. `elab: elaborate functions and dependent binders`
 9. `nbe: add normalization and definitional equality`
 10. `types: check dependent functions and enums`
 11. `totality: add coverage and termination checks`
-12. `proof: add equality refl rewrite and proof tests`
-13. `erase: remove proof and type-only terms`
-14. `go: lower erased runtime ir`
-15. `types: add result and question operator`
-16. `ownership: add move and borrow checks`
-17. `effects: add effect checking`
-18. `concurrency: lower spawn channel select`
-19. `tests: add avtan test runner`
-20. `interop: add explicit go bindings`
+12. `erase: remove proof and type-only terms`
+13. `go: emit runnable go for basic programs`
+14. `cli: add build emit-go and run`
+15. `proof: add equality refl rewrite and proof tests`
+16. `types: add result and question operator`
+17. `ownership: add move and borrow checks`
+18. `effects: add effect checking`
+19. `concurrency: lower spawn channel select`
+20. `interop: add imports packages and go bindings`
+21. `fmt: add formatter`
 
-## 27. Риски
+## 26. Риски
 
 1. Полные зависимые типы могут сделать компилятор слишком сложным.
    Решение: держать core маленьким, surface syntax elaboration-driven, а Go
@@ -740,15 +774,34 @@ Definition of done:
 6. Go interop может размыть soundness.
    Решение: все extern-типы требуют явных trait/effect declarations.
 
-## 28. Ближайшие Технические Шаги
+## 27. Ближайшие Технические Шаги
 
 Самый полезный следующий кусок работы:
 
-1. Расширить parser до оставшихся item/expression форм из этапа 2.
-2. Добавить `avtan parse --json` или stable snapshot формат для AST.
-3. Начать этап 3: formatter поверх AST.
-4. После formatter перейти к этапу 4: name resolution и package graph.
-5. Подготовить fixtures для parser-pass и parser-fail тестов.
+1. Закончить local resolve без imports:
+   1. local path lookup
+   2. unknown-name diagnostics
+   3. wrong-namespace diagnostics
+   4. resolved type/value refs в HIR
+2. Начать `core/`:
+   1. `Term`
+   2. `Type`
+   3. `Binder`
+   4. `Telescope`
+   5. pretty-printer core terms
+3. Сделать самый маленький elaboration slice:
+   1. `fn id<T>(x: T) -> T { x }`
+   2. primitive literals
+   3. function application
+   4. simple `struct`
+4. После этого подключить минимальный Go backend:
+   1. `fn main()`
+   2. `let`
+   3. `return`
+   4. `if`
+   5. integer/string/bool primitives
+5. Добавить `avtan run examples/hello.avtn`.
+6. Затем расширять dependent slice до `Nat`, `Vect`, `head`, `append`.
 
-После этого можно переходить к HIR/name resolution и уже готовить вход для
-dependent core elaboration.
+Imports, aliases, package graph, formatter, Go interop, ownership, effects и
+concurrency остаются после первого runnable dependent-core-to-Go пути.
