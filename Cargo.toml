@@ -2,5 +2,10 @@
 name = "avtanlang"
 version = "0.1.0"
 edition = "2024"
+autobins = false
 
 [dependencies]
+
+[[bin]]
+name = "avtan"
+path = "src/main.rs"

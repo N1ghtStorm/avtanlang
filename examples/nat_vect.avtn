@@ -1,0 +1,30 @@
+package examples.nat_vect
+
+enum Nat {
+    Z,
+    S(Nat),
+}
+
+enum Vect<T, const N: Nat> {
+    Nil
+        where N == Z,
+
+    Cons<const M: Nat> {
+        head: T,
+        tail: Vect<T, M>,
+    }
+        where N == S(M),
+}
+
+fn head<T, const N: Nat>(xs: Vect<T, S(N)>) -> T {
+    match xs {
+        Vect::Cons { head, .. } => head,
+    }
+}
+
+proof fn plus_zero_right(n: Nat) -> n + Z == n {
+    match n {
+        Z => Refl,
+        S(k) => rewrite plus_zero_right(k) in Refl,
+    }
+}

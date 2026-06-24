@@ -17,13 +17,13 @@ erasure и только затем Go lowering.
 2. Чтение `avtan.toml`.
 3. Парсинг одного пакета из `.avtn` файлов.
 4. Диагностики с позициями в исходнике.
-5. AST для функций, `data`, структур, enum, выражений, `match`, implicit args,
-   holes, equality proofs и `rewrite`.
+5. AST для функций, Rust-like `struct`/`enum`, выражений, `match`, dependent
+   generic params, holes, equality proofs и `rewrite`.
 6. Dependent core с universes, Pi, Sigma, lambdas, applications, constructors,
    case trees и erased binders.
 7. Elaboration из surface syntax в core.
 8. Normalization и definitional equality.
-9. Type checking для зависимых функций и dependent data.
+9. Type checking для зависимых функций и dependent `struct`/`enum`.
 10. Coverage и structural termination для total definitions.
 11. Erasure proof/type-only значений.
 12. Генерация читаемого Go-кода из erased runtime core.
@@ -182,8 +182,8 @@ Definition of done:
    5. `enum`
    6. `type`
    7. `fn`
-   8. `data`
-   9. dependent constructor signatures
+8. dependent `enum` and `struct` declarations
+9. dependent variant `where` clauses
    10. `impl`
    11. blocks
    12. `let`
@@ -294,7 +294,7 @@ Definition of done:
    2. lambdas
    3. applications
    4. dependent function types
-   5. dependent data declarations
+   5. dependent enum/struct declarations
    6. pattern matches
    7. `rewrite`
    8. `impossible`
@@ -302,7 +302,7 @@ Definition of done:
 
 Definition of done:
 
-1. `fn id {A: Type} (x: A) -> A = x` elaborates.
+1. `fn id<T>(x: T) -> T = x` elaborates.
 2. `head(xs)` восстанавливает implicit length index.
 3. Unsolved hole показывает локальный context.
 
@@ -337,7 +337,7 @@ Definition of done:
 1. Проверять universes и не допускать `Type : Type`.
 2. Проверять Pi/Sigma types.
 3. Проверять dependent functions.
-4. Проверять dependent data constructors with indexed result types.
+4. Проверять dependent enum variants with index-refining `where` clauses.
 5. Проверять equality type и `Refl`.
 6. Проверять `rewrite proof in expr`.
 7. Проверять implicit, auto и erased arguments.
@@ -435,9 +435,9 @@ Definition of done:
    1. Avtan package -> Go package
    2. `str` -> `string`
    3. numeric primitives -> Go numeric types
-   4. erased structs/data -> Go structs/interfaces
+   4. erased structs/enums -> Go structs/interfaces
    5. fieldless enums -> Go constants
-   6. payload enums/data -> interface + variant structs
+   6. payload enums -> interface + variant structs
    7. `Result<T, E>` -> `(T, error)` для Go-friendly функций
    8. `?` -> early return
 5. Добавить integration-тесты: `.avtn` -> erased IR -> `.go` -> `go test`.
@@ -688,7 +688,7 @@ Definition of done:
 7. `core: add universes pi sigma and erased binders`
 8. `elab: add implicit arguments and holes`
 9. `nbe: add normalization and definitional equality`
-10. `types: check dependent functions and data`
+10. `types: check dependent functions and enums`
 11. `totality: add coverage and termination checks`
 12. `proof: add equality refl rewrite and proof tests`
 13. `erase: remove proof and type-only terms`

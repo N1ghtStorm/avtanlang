@@ -18,8 +18,9 @@ Avtan should:
 1. Feel familiar to Rust users while producing readable, idiomatic Go output.
 2. Make concurrency explicit, typed, and easier to audit than raw goroutines.
 3. Provide full Idris-style dependent types through a small total core language,
-   including dependent functions, dependent data types, equality proofs, implicit
-   arguments, elaboration, and proof erasure.
+   while keeping Rust-like surface syntax for dependent `struct` and `enum`
+   declarations, equality proofs, implicit arguments, elaboration, and proof
+   erasure.
 4. Use ownership and borrowing for local safety, but map predictably to Go's
    garbage-collected runtime.
 5. Preserve source-level invariants in generated Go through compile-time proofs,
@@ -109,9 +110,9 @@ Naming conventions:
 Reserved keywords:
 
 ```text
-as async await borrow box break chan const continue data defer do else enum
-effect false fn for if impl import in let loop match mod move mut package proof
-pub recv ref return select send spawn static struct trait true type unsafe use
+as async await borrow box break chan const continue defer do else enum effect
+false fn for if impl import in let loop match mod move mut package proof pub
+recv ref return select send spawn static struct trait true type unsafe use
 where while yield
 ```
 
@@ -204,7 +205,7 @@ Fixed arrays may carry length as an ordinary value-level natural that appears in
 the type:
 
 ```avtan
-fn first {n: Nat} (xs: [i32; S(n)]) -> i32
+fn first<const N: Nat>(xs: [i32; S(N)]) -> i32
 {
     xs[0]
 }
@@ -336,24 +337,26 @@ emits a wrapper.
 
 ### 6.3 Dependent Parameters
 
-Avtan supports explicit, implicit, auto-implicit, and erased parameters.
+Avtan supports ordinary parameters, type generics, dependent value generics, and
+proof-only parameters. The preferred surface syntax follows Rust generics.
 
 ```avtan
-fn id {A: Type} (x: A) -> A = x
+fn id<T>(x: T) -> T = x
 
-fn head {A: Type} {n: Nat} (xs: Vect<A, S(n)>) -> A
+fn head<T, const N: Nat>(xs: Vect<T, S(N)>) -> T
 
-fn chunk {n: Nat} (bytes: Vect<u8, n>) (size: Nat)
-    -> (count: Nat ** Vect<Vect<u8, size>, count>)
+fn chunk<const N: Nat>(bytes: Vect<u8, N>, size: Nat)
+    -> exists<const Count: Nat> Vect<Vect<u8, size>, Count>
 requires size > 0
 ```
 
 Parameter forms:
 
 1. `(x: A)`: explicit runtime or compile-time parameter.
-2. `{x: A}`: implicit parameter inferred by elaboration.
-3. `{auto p: P}`: implicit proof found by proof search.
-4. `{erased x: A}`: compile-time-only parameter removed before Go lowering.
+2. `<T>`: type parameter, elaborated as an implicit type argument.
+3. `<const N: Nat>`: dependent value parameter, usually inferred and erased.
+4. `{auto p: P}`: implicit proof found by proof search.
+5. `{erased p: P}`: compile-time-only proof argument removed before Go lowering.
 
 The core type of a dependent function is a Pi type:
 
@@ -586,72 +589,93 @@ A function type may bind a value and use it in the return type.
 (x: A) -> B(x)
 ```
 
-Surface function syntax elaborates to Pi types:
+Rust-like function syntax elaborates to Pi types:
 
 ```avtan
-fn id {A: Type} (x: A) -> A = x
+fn id<T>(x: T) -> T = x
 
-fn head {A: Type} {n: Nat} (xs: Vect<A, S(n)>) -> A
+fn head<T, const N: Nat>(xs: Vect<T, S(N)>) -> T
 ```
 
-The parameter `{n: Nat}` is implicit: callers normally write `head(xs)`, and the
-elaborator infers `n` from the type of `xs`.
+The parameter `const N: Nat` is a dependent value parameter. It is normally
+erased and inferred by elaboration, so callers write `head(xs)` rather than
+passing `N` manually. This looks like Rust const generics, but Avtan allows these
+parameters to range over user-defined total types, not only machine constants.
 
 ### 11.3 Sigma Types And Dependent Pairs
 
 Sigma types carry a value together with another value whose type depends on the
 first value.
 
+Core notation is `(x: A ** B(x))`. The preferred surface spelling is:
+
 ```avtan
-(x: A ** B(x))
+exists<const N: Nat> Vect<T, N>
 ```
 
 Example:
 
 ```avtan
-fn read_vec<T>(path: Path) -> Result<(n: Nat ** Vect<T, n>), IoError>
+fn read_vec<T>(path: Path) -> Result<exists<const N: Nat> Vect<T, N>, IoError>
 ```
 
 Go lowering keeps only runtime-relevant fields. Erased proof fields are removed.
 
-### 11.4 Dependent Data Types
+### 11.4 Dependent Enums And Structs
 
-Dependent data declarations may define type families indexed by values.
+Dependent type families are written with Rust-like `enum` and `struct`
+declarations. A generic parameter introduced with `const` is a value-level type
+index.
 
 ```avtan
-data Nat: Type {
-    Z: Nat,
-    S: Nat -> Nat,
+enum Nat {
+    Z,
+    S(Nat),
 }
 
-data Vect(A: Type): Nat -> Type {
-    Nil: Vect(A, Z),
-    Cons: (n: Nat, head: A, tail: Vect(A, n)) -> Vect(A, S(n)),
+enum Vect<T, const N: Nat> {
+    Nil
+        where N == Z,
+
+    Cons<const M: Nat> {
+        head: T,
+        tail: Vect<T, M>,
+    }
+        where N == S(M),
 }
 ```
 
-The compiler also accepts Rust-like generic spelling for common indexed types:
+Internally, `Vect<T, const N: Nat>` elaborates to a type family whose core shape
+is equivalent to `Type -> Nat -> Type`. That arrow form is compiler/type-theory
+semantics, not the preferred surface syntax. Users should normally read the
+declaration as: "`Vect` is a vector type indexed by its element type and length."
+
+Variant `where` clauses refine the enum index. `Nil` is available only when
+`N == Z`, while `Cons` is available only when `N == S(M)`. This keeps the surface
+syntax close to Rust while elaborating to the same dependent core as an
+Idris-style indexed data family.
+
+Functions use the same Rust-like generic syntax:
 
 ```avtan
-fn append {A: Type} {m: Nat} {n: Nat}
-    (left: Vect<A, m>, right: Vect<A, n>) -> Vect<A, m + n>
+fn append<T, const M: Nat, const N: Nat>(
+    left: Vect<T, M>,
+    right: Vect<T, N>,
+) -> Vect<T, M + N>
 ```
-
-Constructor result types may refine indices, as in `Nil: Vect(A, Z)` and
-`Cons: ... -> Vect(A, S(n))`.
 
 ### 11.5 Equality, Refl, And Rewrite
 
 Propositional equality is an ordinary type:
 
 ```avtan
-x = y
+x == y
 ```
 
 `Refl` proves equality when both sides normalize to the same core term.
 
 ```avtan
-proof fn plus_zero_right(n: Nat) -> n + Z = n {
+proof fn plus_zero_right(n: Nat) -> n + Z == n {
     match n {
         Z => Refl,
         S(k) => rewrite plus_zero_right(k) in Refl,
@@ -667,9 +691,9 @@ proof.
 Pattern matching refines the types of branch bodies.
 
 ```avtan
-fn head {A: Type} {n: Nat} (xs: Vect<A, S(n)>) -> A {
+fn head<T, const N: Nat>(xs: Vect<T, S(N)>) -> T {
     match xs {
-        Cons(_, x, _) => x,
+        Vect::Cons { head, .. } => head,
     }
 }
 ```
@@ -677,7 +701,7 @@ fn head {A: Type} {n: Nat} (xs: Vect<A, S(n)>) -> A {
 Impossible branches are allowed when the context is contradictory:
 
 ```avtan
-fn absurd_head {A: Type} (xs: Vect<A, Z>) -> A {
+fn absurd_head<T>(xs: Vect<T, Z>) -> T {
     match xs {
         Nil => impossible,
     }
@@ -716,8 +740,7 @@ The elaborator inserts implicit arguments, solves metavariables, and reports
 unsolved holes.
 
 ```avtan
-fn map {A: Type} {B: Type} {n: Nat}
-    (f: A -> B, xs: Vect<A, n>) -> Vect<B, n>
+fn map<A, B, const N: Nat>(f: fn(A) -> B, xs: Vect<A, N>) -> Vect<B, N>
 
 let ys = map(double, xs)
 ```
@@ -725,8 +748,11 @@ let ys = map(double, xs)
 Auto implicits request proof search:
 
 ```avtan
-fn safe_index {A: Type} {n: Nat}
-    (xs: Vect<A, n>, i: Fin<n>, {auto p: InBounds(i, n)}) -> A
+fn safe_index<T, const N: Nat>(
+    xs: Vect<T, N>,
+    i: Fin<N>,
+    {auto p: InBounds<i, N>},
+) -> T
 ```
 
 Typed holes are allowed during development:
@@ -743,7 +769,7 @@ Arguments and fields that exist only for type checking are erased before Go
 lowering.
 
 ```avtan
-fn length {A: Type} {erased n: Nat} (xs: Vect<A, n>) -> Nat
+fn length<T, const N: Nat>(xs: Vect<T, N>) -> Nat
 ```
 
 Erasure rules:
@@ -1124,7 +1150,7 @@ Nat
 Fin<n>
 Vect<T, n>
 Dec<P>
-x = y
+x == y
 Refl
 Option<T>
 Result<T, E>
@@ -1310,8 +1336,8 @@ architecture, not a separate simply typed language.
 Required in the first dependent-core MVP:
 
 1. Lexer, parser, formatter, and AST.
-2. Packages, imports, functions, structs, simple enums, and dependent `data`
-   declarations.
+2. Packages, imports, functions, structs, simple enums, and dependent
+   `struct`/`enum` declarations.
 3. Core terms for universes, variables, lambdas, Pi types, applications, lets,
    constructors, case trees, holes, and erased arguments.
 4. Elaboration from surface syntax into core with implicit arguments and
@@ -1333,7 +1359,7 @@ Features explicitly not required in the first dependent-core MVP:
 4. General partial functions inside types.
 5. Backend `unsafe`.
 6. Custom async runtimes.
-7. Optimized Go representation for every dependent data encoding.
+7. Optimized Go representation for every dependent enum/struct encoding.
 
 ## 24. Open Design Questions
 
