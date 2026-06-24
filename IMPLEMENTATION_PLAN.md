@@ -182,8 +182,8 @@ Definition of done:
    5. `enum`
    6. `type`
    7. `fn`
-8. dependent `enum` and `struct` declarations
-9. dependent variant `where` clauses
+   8. dependent `enum` and `struct` declarations
+   9. dependent variant `where` clauses
    10. `impl`
    11. blocks
    12. `let`
@@ -721,11 +721,11 @@ Definition of done:
 
 Самый полезный следующий кусок работы:
 
-1. Создать `src/source`, `src/diagnostics`, `src/lexer`.
-2. Добавить `TokenKind`, `Token`, `Span`, `SourceFile`.
-3. Написать lexer для identifiers, keywords, literals и punctuation.
-4. Добавить CLI-команду `avtan lex <file>`.
-5. Покрыть lexer snapshot-тестами.
+1. Расширить parser до оставшихся item/expression форм из этапа 2.
+2. Добавить `avtan parse --json` или stable snapshot формат для AST.
+3. Начать этап 3: formatter поверх AST.
+4. После formatter перейти к этапу 4: name resolution и package graph.
+5. Подготовить fixtures для parser-pass и parser-fail тестов.
 
-После этого можно переходить к parser и уже быстро получать обратную связь по
-синтаксису языка.
+После этого можно переходить к HIR/name resolution и уже готовить вход для
+dependent core elaboration.

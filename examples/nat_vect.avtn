@@ -23,7 +23,7 @@ fn head<T, const N: Nat>(xs: Vect<T, S(N)>) -> T {
 }
 
 proof fn plus_zero_right(n: Nat) -> n + Z == n {
-    match n {
+    match n {й
         Z => Refl,
         S(k) => rewrite plus_zero_right(k) in Refl,
     }

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use crate::diagnostics::render_diagnostic;
 use crate::lexer;
+use crate::parser;
 use crate::source::{FileId, SourceFile};
 
 pub fn run() -> i32 {
@@ -28,6 +29,21 @@ pub fn run() -> i32 {
             }
 
             lex_file(PathBuf::from(path))
+        }
+        "parse" => {
+            let Some(path) = args.next() else {
+                eprintln!("error: missing input file for `avtan parse`");
+                print_usage();
+                return 2;
+            };
+
+            if args.next().is_some() {
+                eprintln!("error: `avtan parse` accepts exactly one input file");
+                print_usage();
+                return 2;
+            }
+
+            parse_file(PathBuf::from(path))
         }
         "help" | "-h" | "--help" => {
             print_usage();
@@ -68,7 +84,36 @@ fn lex_file(path: PathBuf) -> i32 {
     if result.diagnostics.is_empty() { 0 } else { 1 }
 }
 
+fn parse_file(path: PathBuf) -> i32 {
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!("error: failed to read {}: {error}", path.display());
+            return 1;
+        }
+    };
+
+    let file = SourceFile::new(FileId(0), path, text);
+    let lexed = lexer::lex(&file);
+    let parsed = parser::parse_tokens(&lexed.tokens);
+
+    for diagnostic in &lexed.diagnostics {
+        eprint!("{}", render_diagnostic(diagnostic, Some(&file)));
+    }
+    for diagnostic in &parsed.diagnostics {
+        eprint!("{}", render_diagnostic(diagnostic, Some(&file)));
+    }
+
+    if lexed.diagnostics.is_empty() && parsed.diagnostics.is_empty() {
+        println!("{:#?}", parsed.module);
+        0
+    } else {
+        1
+    }
+}
+
 fn print_usage() {
     eprintln!("usage:");
     eprintln!("  avtan lex <file.avtn>");
+    eprintln!("  avtan parse <file.avtn>");
 }
