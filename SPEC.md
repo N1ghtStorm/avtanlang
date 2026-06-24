@@ -355,13 +355,17 @@ Parameter forms:
 1. `(x: A)`: explicit runtime or compile-time parameter.
 2. `<T>`: type parameter, elaborated as an implicit type argument.
 3. `<const N: Nat>`: dependent value parameter, usually inferred and erased.
-4. `{auto p: P}`: implicit proof found by proof search.
-5. `{erased p: P}`: compile-time-only proof argument removed before Go lowering.
+4. `{p: P}` or `{implicit p: P}`: implicit parameter inserted by elaboration.
+5. `{auto p: P}`: implicit proof found by proof search.
+6. `{erased p: P}`: compile-time-only proof argument removed before Go lowering.
 
 The core type of a dependent function is a Pi type:
 
 ```avtan
 (x: A) -> B(x)
+{implicit x: A} -> B(x)
+{auto p: P(x)} -> B(x)
+{erased p: P(x)} -> B(x)
 ```
 
 ## 7. Expressions

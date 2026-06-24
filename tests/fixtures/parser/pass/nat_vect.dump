@@ -1,0 +1,16 @@
+module examples.nat_vect
+  enum Nat
+    variant Z unit
+    variant S tuple(Nat)
+  enum Vect<T, const N: Nat>
+    variant Nil unit where N == Z
+    variant Cons<const M: Nat> struct(head: T, tail: Vect<T, M>) where N == S(M)
+  fn head<T, const N: Nat>(xs: Vect<T, S(N)>) -> T
+    block
+      match xs
+        arm Vect::Cons { head, .. } => head
+  proof fn plus_zero_right(n: Nat) -> n + Z == n
+    block
+      match n
+        arm Z => Refl
+        arm S(k) => rewrite plus_zero_right(k) in Refl

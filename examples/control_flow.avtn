@@ -1,0 +1,32 @@
+package examples.control_flow
+
+import std.sync.{TaskGroup, Chan}
+
+#[derive(Clone, Eq)]
+pub struct Handler {
+    pub count: i32,
+}
+
+#[test]
+fn control(xs: Vec<i32>) -> i32 {
+    let acc: i32 = 0;
+
+    if true {
+        return 1;
+    } else {
+        loop {
+            break 2;
+        }
+    }
+
+    for item in xs {
+        continue;
+    }
+
+    while false {
+        break;
+    }
+
+    acc
+}
+

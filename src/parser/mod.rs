@@ -1,6 +1,8 @@
 pub mod ast;
+pub mod dump;
 
 pub use ast::*;
+pub use dump::dump_module;
 
 use crate::diagnostics::Diagnostic;
 use crate::lexer::{Keyword, Token, TokenKind};
@@ -69,27 +71,27 @@ impl Parser {
     }
 
     fn parse_item(&mut self) -> Item {
-        self.skip_attributes();
+        let attributes = self.parse_attributes();
         let public = self.eat_keyword(Keyword::Pub).is_some();
         let flavor = self.parse_fn_flavor();
 
         if self.at_keyword(Keyword::Import) {
-            return Item::Import(self.parse_import());
+            return Item::Import(self.parse_import(attributes));
         }
         if self.at_keyword(Keyword::Enum) {
-            return Item::Enum(self.parse_enum(public));
+            return Item::Enum(self.parse_enum(attributes, public));
         }
         if self.at_keyword(Keyword::Struct) {
-            return Item::Struct(self.parse_struct(public));
+            return Item::Struct(self.parse_struct(attributes, public));
         }
         if self.at_keyword(Keyword::Type) {
-            return Item::TypeAlias(self.parse_type_alias(public));
+            return Item::TypeAlias(self.parse_type_alias(attributes, public));
         }
         if self.at_keyword(Keyword::Fn) {
-            return Item::Fn(self.parse_fn(public, flavor));
+            return Item::Fn(self.parse_fn(attributes, public, flavor));
         }
         if self.at_keyword(Keyword::Impl) {
-            return Item::Impl(self.parse_impl());
+            return Item::Impl(self.parse_impl(attributes));
         }
 
         let span = self.current_span();
@@ -99,11 +101,11 @@ impl Parser {
         Item::Error(span)
     }
 
-    fn parse_import(&mut self) -> ImportItem {
+    fn parse_import(&mut self, attributes: Vec<Attribute>) -> ImportItem {
         let start = self
             .expect_keyword(Keyword::Import, "expected `import`")
             .start;
-        let path = self.parse_package_path();
+        let (path, members) = self.parse_import_path();
         let alias = if self.eat_keyword(Keyword::As).is_some() {
             Some(
                 self.expect_ident("expected import alias")
@@ -118,13 +120,71 @@ impl Parser {
             .end;
 
         ImportItem {
+            attributes,
             path,
+            members,
             alias,
             span: self.span(start, end),
         }
     }
 
-    fn parse_enum(&mut self, public: bool) -> EnumItem {
+    fn parse_import_path(&mut self) -> (Path, Vec<String>) {
+        let start = self.current_span().start;
+        let mut segments = Vec::new();
+        let mut members = Vec::new();
+
+        segments.push(
+            self.expect_ident("expected import path")
+                .unwrap_or_default(),
+        );
+        while self.eat_kind(&TokenKind::Dot).is_some() {
+            if self.at_kind(&TokenKind::LBrace) {
+                members = self.parse_import_members();
+                break;
+            }
+            segments.push(
+                self.expect_ident("expected import path segment")
+                    .unwrap_or_default(),
+            );
+        }
+
+        if self.eat_kind(&TokenKind::DoubleColon).is_some() {
+            if self.at_kind(&TokenKind::LBrace) {
+                members = self.parse_import_members();
+            } else {
+                segments.push(
+                    self.expect_ident("expected import path segment")
+                        .unwrap_or_default(),
+                );
+            }
+        }
+
+        (
+            Path::new(segments, self.span(start, self.previous_end())),
+            members,
+        )
+    }
+
+    fn parse_import_members(&mut self) -> Vec<String> {
+        self.expect_kind(&TokenKind::LBrace, "expected `{` in import group");
+        let mut members = Vec::new();
+
+        while !self.at_eof() && !self.at_kind(&TokenKind::RBrace) {
+            if self.eat_kind(&TokenKind::Comma).is_some() {
+                continue;
+            }
+            members.push(
+                self.expect_ident("expected imported member")
+                    .unwrap_or_default(),
+            );
+            self.eat_kind(&TokenKind::Comma);
+        }
+
+        self.expect_kind(&TokenKind::RBrace, "expected `}` after import group");
+        members
+    }
+
+    fn parse_enum(&mut self, attributes: Vec<Attribute>, public: bool) -> EnumItem {
         let start = self.expect_keyword(Keyword::Enum, "expected `enum`").start;
         let name = self.expect_ident("expected enum name").unwrap_or_default();
         let generics = self.parse_generic_params();
@@ -143,6 +203,7 @@ impl Parser {
             .end;
 
         EnumItem {
+            attributes,
             public,
             name,
             generics,
@@ -152,6 +213,7 @@ impl Parser {
     }
 
     fn parse_enum_variant(&mut self) -> EnumVariant {
+        let attributes = self.parse_attributes();
         let start = self.current_span().start;
         let name = self
             .expect_ident("expected enum variant name")
@@ -177,6 +239,7 @@ impl Parser {
         };
 
         EnumVariant {
+            attributes,
             name,
             generics,
             kind,
@@ -185,7 +248,7 @@ impl Parser {
         }
     }
 
-    fn parse_struct(&mut self, public: bool) -> StructItem {
+    fn parse_struct(&mut self, attributes: Vec<Attribute>, public: bool) -> StructItem {
         let start = self
             .expect_keyword(Keyword::Struct, "expected `struct`")
             .start;
@@ -207,6 +270,7 @@ impl Parser {
             .unwrap_or_else(|| self.previous_end());
 
         StructItem {
+            attributes,
             public,
             name,
             generics,
@@ -216,7 +280,7 @@ impl Parser {
         }
     }
 
-    fn parse_type_alias(&mut self, public: bool) -> TypeAliasItem {
+    fn parse_type_alias(&mut self, attributes: Vec<Attribute>, public: bool) -> TypeAliasItem {
         let start = self.expect_keyword(Keyword::Type, "expected `type`").start;
         let name = self
             .expect_ident("expected type alias name")
@@ -231,6 +295,7 @@ impl Parser {
             .unwrap_or(ty.span.end);
 
         TypeAliasItem {
+            attributes,
             public,
             name,
             generics,
@@ -240,7 +305,7 @@ impl Parser {
         }
     }
 
-    fn parse_fn(&mut self, public: bool, flavor: FnFlavor) -> FnItem {
+    fn parse_fn(&mut self, attributes: Vec<Attribute>, public: bool, flavor: FnFlavor) -> FnItem {
         let start = self.expect_keyword(Keyword::Fn, "expected `fn`").start;
         let name = self
             .expect_ident("expected function name")
@@ -272,6 +337,7 @@ impl Parser {
             .unwrap_or_else(|| self.previous_end());
 
         FnItem {
+            attributes,
             public,
             flavor,
             name,
@@ -285,7 +351,7 @@ impl Parser {
         }
     }
 
-    fn parse_impl(&mut self) -> ImplItem {
+    fn parse_impl(&mut self, attributes: Vec<Attribute>) -> ImplItem {
         let start = self.expect_keyword(Keyword::Impl, "expected `impl`").start;
         let generics = self.parse_generic_params();
         let target = self.parse_type(&[Stop::LBrace]);
@@ -300,6 +366,7 @@ impl Parser {
             .end;
 
         ImplItem {
+            attributes,
             generics,
             target,
             items,
@@ -347,6 +414,24 @@ impl Parser {
     }
 
     fn parse_params(&mut self) -> Vec<Param> {
+        if self.at_kind(&TokenKind::LParen) {
+            return self.parse_parenthesized_params();
+        }
+
+        let mut params = Vec::new();
+        while self.at_braced_param_start() {
+            params.push(self.parse_braced_param());
+            self.eat_kind(&TokenKind::Comma);
+        }
+
+        if params.is_empty() {
+            self.expect_kind(&TokenKind::LParen, "expected `(` before parameters");
+        }
+
+        params
+    }
+
+    fn parse_parenthesized_params(&mut self) -> Vec<Param> {
         self.expect_kind(&TokenKind::LParen, "expected `(` before parameters");
         let mut params = Vec::new();
 
@@ -355,15 +440,11 @@ impl Parser {
                 continue;
             }
 
-            let start = self.current_span().start;
-            let pattern = self.parse_pattern();
-            self.expect_kind(&TokenKind::Colon, "expected `:` after parameter name");
-            let ty = self.parse_type(&[Stop::Comma, Stop::RParen]);
-            params.push(Param {
-                name: pattern,
-                span: self.span(start, ty.span.end),
-                ty,
-            });
+            if self.at_kind(&TokenKind::LBrace) {
+                params.push(self.parse_braced_param());
+            } else {
+                params.push(self.parse_explicit_param(&[Stop::Comma, Stop::RParen]));
+            }
 
             if self.eat_kind(&TokenKind::Comma).is_none() {
                 break;
@@ -372,6 +453,51 @@ impl Parser {
 
         self.expect_kind(&TokenKind::RParen, "expected `)` after parameters");
         params
+    }
+
+    fn parse_explicit_param(&mut self, stops: &[Stop]) -> Param {
+        let start = self.current_span().start;
+        let pattern = self.parse_pattern();
+        self.expect_kind(&TokenKind::Colon, "expected `:` after parameter name");
+        let ty = self.parse_type(stops);
+        Param {
+            mode: BinderMode::Explicit,
+            name: pattern,
+            span: self.span(start, ty.span.end),
+            ty,
+        }
+    }
+
+    fn parse_braced_param(&mut self) -> Param {
+        let start = self
+            .expect_kind(&TokenKind::LBrace, "expected `{` before binder")
+            .start;
+        let mode = self.parse_braced_binder_mode();
+        let pattern = self.parse_pattern();
+        self.expect_kind(&TokenKind::Colon, "expected `:` after binder name");
+        let ty = self.parse_type(&[Stop::RBrace]);
+        let end = self
+            .expect_kind(&TokenKind::RBrace, "expected `}` after binder")
+            .end;
+
+        Param {
+            mode,
+            name: pattern,
+            ty,
+            span: self.span(start, end),
+        }
+    }
+
+    fn parse_braced_binder_mode(&mut self) -> BinderMode {
+        if self.eat_keyword(Keyword::Auto).is_some() {
+            BinderMode::Auto
+        } else if self.eat_keyword(Keyword::Erased).is_some() {
+            BinderMode::Erased
+        } else if self.eat_keyword(Keyword::Implicit).is_some() {
+            BinderMode::Implicit
+        } else {
+            BinderMode::Implicit
+        }
     }
 
     fn parse_tuple_fields(&mut self) -> Vec<Field> {
@@ -385,6 +511,7 @@ impl Parser {
             let start = self.current_span().start;
             let ty = self.parse_type(&[Stop::Comma, Stop::RParen]);
             fields.push(Field {
+                attributes: Vec::new(),
                 public: false,
                 name: None,
                 span: self.span(start, ty.span.end),
@@ -409,12 +536,14 @@ impl Parser {
                 continue;
             }
 
+            let attributes = self.parse_attributes();
             let public = self.eat_keyword(Keyword::Pub).is_some();
             let start = self.current_span().start;
             let name = self.expect_ident("expected field name");
             self.expect_kind(&TokenKind::Colon, "expected `:` after field name");
             let ty = self.parse_type(&[Stop::Comma, Stop::RBrace]);
             fields.push(Field {
+                attributes,
                 public,
                 name,
                 span: self.span(start, ty.span.end),
@@ -533,7 +662,11 @@ impl Parser {
                 self.bump();
                 TypeExpr::new(TypeExprKind::Hole("_".to_string()), token.span)
             }
+            TokenKind::LParen if self.at_parenthesized_type_binder_start() => {
+                self.parse_parenthesized_pi_type(stops)
+            }
             TokenKind::LParen => self.parse_tuple_type(),
+            TokenKind::LBrace if self.at_braced_param_start() => self.parse_braced_pi_type(stops),
             TokenKind::LBracket => self.parse_array_or_slice_type(),
             _ => {
                 self.error_here("AVP0002", "expected type");
@@ -541,6 +674,34 @@ impl Parser {
                 TypeExpr::new(TypeExprKind::Unknown, token.span)
             }
         }
+    }
+
+    fn parse_parenthesized_pi_type(&mut self, stops: &[Stop]) -> TypeExpr {
+        let start = self.expect_kind(&TokenKind::LParen, "expected `(`").start;
+        let mut param = self.parse_explicit_param(&[Stop::RParen]);
+        let param_end = self
+            .expect_kind(&TokenKind::RParen, "expected `)` after dependent binder")
+            .end;
+        param.span = self.span(start, param_end);
+        self.parse_pi_type(start, param, stops)
+    }
+
+    fn parse_braced_pi_type(&mut self, stops: &[Stop]) -> TypeExpr {
+        let start = self.current_span().start;
+        let param = self.parse_braced_param();
+        self.parse_pi_type(start, param, stops)
+    }
+
+    fn parse_pi_type(&mut self, start: usize, param: Param, stops: &[Stop]) -> TypeExpr {
+        self.expect_kind(&TokenKind::Arrow, "expected `->` after dependent binder");
+        let body = self.parse_type(stops);
+        TypeExpr::new(
+            TypeExprKind::Pi {
+                param: Box::new(param),
+                body: Box::new(body.clone()),
+            },
+            self.span(start, body.span.end),
+        )
     }
 
     fn parse_tuple_type(&mut self) -> TypeExpr {
@@ -758,12 +919,21 @@ impl Parser {
                 Expr::new(ExprKind::Block(block.clone()), block.span)
             }
             TokenKind::Keyword(Keyword::Match) => self.parse_match_expr(),
+            TokenKind::Keyword(Keyword::If) => self.parse_if_expr(),
+            TokenKind::Keyword(Keyword::While) => self.parse_while_expr(),
+            TokenKind::Keyword(Keyword::For) => self.parse_for_expr(),
+            TokenKind::Keyword(Keyword::Loop) => self.parse_loop_expr(),
             TokenKind::Keyword(Keyword::Rewrite) => self.parse_rewrite_expr(stops),
             TokenKind::Keyword(Keyword::Impossible) => {
                 self.bump();
                 Expr::new(ExprKind::Impossible, token.span)
             }
             TokenKind::Keyword(Keyword::Return) => self.parse_return_expr(stops),
+            TokenKind::Keyword(Keyword::Break) => self.parse_break_expr(stops),
+            TokenKind::Keyword(Keyword::Continue) => {
+                self.bump();
+                Expr::new(ExprKind::Continue, token.span)
+            }
             _ => {
                 self.error_here("AVP0003", "expected expression");
                 self.bump();
@@ -859,6 +1029,84 @@ impl Parser {
         )
     }
 
+    fn parse_if_expr(&mut self) -> Expr {
+        let start = self.expect_keyword(Keyword::If, "expected `if`").start;
+        let condition = self.parse_expr(&[Stop::LBrace]);
+        let then_branch = self.parse_block();
+        let else_branch = if self.eat_keyword(Keyword::Else).is_some() {
+            if self.at_keyword(Keyword::If) {
+                Some(Box::new(self.parse_if_expr()))
+            } else if self.at_kind(&TokenKind::LBrace) {
+                let block = self.parse_block();
+                Some(Box::new(Expr::new(
+                    ExprKind::Block(block.clone()),
+                    block.span,
+                )))
+            } else {
+                Some(Box::new(self.parse_expr(&[
+                    Stop::Comma,
+                    Stop::Semicolon,
+                    Stop::RBrace,
+                ])))
+            }
+        } else {
+            None
+        };
+        let end = else_branch
+            .as_ref()
+            .map(|expr| expr.span.end)
+            .unwrap_or(then_branch.span.end);
+
+        Expr::new(
+            ExprKind::If {
+                condition: Box::new(condition),
+                then_branch,
+                else_branch,
+            },
+            self.span(start, end),
+        )
+    }
+
+    fn parse_while_expr(&mut self) -> Expr {
+        let start = self
+            .expect_keyword(Keyword::While, "expected `while`")
+            .start;
+        let condition = self.parse_expr(&[Stop::LBrace]);
+        let body = self.parse_block();
+        let span = self.span(start, body.span.end);
+        Expr::new(
+            ExprKind::While {
+                condition: Box::new(condition),
+                body,
+            },
+            span,
+        )
+    }
+
+    fn parse_for_expr(&mut self) -> Expr {
+        let start = self.expect_keyword(Keyword::For, "expected `for`").start;
+        let pattern = self.parse_pattern();
+        self.expect_keyword(Keyword::In, "expected `in` in for expression");
+        let iterable = self.parse_expr(&[Stop::LBrace]);
+        let body = self.parse_block();
+        let span = self.span(start, body.span.end);
+        Expr::new(
+            ExprKind::For {
+                pattern,
+                iterable: Box::new(iterable),
+                body,
+            },
+            span,
+        )
+    }
+
+    fn parse_loop_expr(&mut self) -> Expr {
+        let start = self.expect_keyword(Keyword::Loop, "expected `loop`").start;
+        let body = self.parse_block();
+        let span = self.span(start, body.span.end);
+        Expr::new(ExprKind::Loop { body }, span)
+    }
+
     fn parse_rewrite_expr(&mut self, stops: &[Stop]) -> Expr {
         let start = self
             .expect_keyword(Keyword::Rewrite, "expected `rewrite`")
@@ -873,6 +1121,20 @@ impl Parser {
                 body: Box::new(body),
             },
             span,
+        )
+    }
+
+    fn parse_break_expr(&mut self, stops: &[Stop]) -> Expr {
+        let start = self
+            .expect_keyword(Keyword::Break, "expected `break`")
+            .start;
+        if self.at_stop(stops) || self.at_kind(&TokenKind::Semicolon) {
+            return Expr::new(ExprKind::Break(None), self.span(start, self.previous_end()));
+        }
+        let value = self.parse_expr(stops);
+        Expr::new(
+            ExprKind::Break(Some(Box::new(value.clone()))),
+            self.span(start, value.span.end),
         )
     }
 
@@ -1116,22 +1378,101 @@ impl Parser {
         }
     }
 
-    fn skip_attributes(&mut self) {
+    fn parse_attributes(&mut self) -> Vec<Attribute> {
+        let mut attributes = Vec::new();
+
         while self.at_kind(&TokenKind::Hash) {
-            self.bump();
+            let start = self.bump().start;
             if self.eat_kind(&TokenKind::LBracket).is_some() {
-                let mut depth = 1usize;
-                while !self.at_eof() && depth > 0 {
-                    if self.eat_kind(&TokenKind::LBracket).is_some() {
-                        depth += 1;
-                    } else if self.eat_kind(&TokenKind::RBracket).is_some() {
-                        depth -= 1;
-                    } else {
-                        self.bump();
-                    }
-                }
+                let path = self.parse_path_colon();
+                let args = if self.at_kind(&TokenKind::LParen) {
+                    self.parse_attribute_args()
+                } else {
+                    Vec::new()
+                };
+                let end = self
+                    .expect_kind(&TokenKind::RBracket, "expected `]` after attribute")
+                    .end;
+                attributes.push(Attribute {
+                    path,
+                    args,
+                    span: self.span(start, end),
+                });
+            } else {
+                self.error_here("AVP0007", "expected `[` after `#`");
             }
         }
+
+        attributes
+    }
+
+    fn parse_attribute_args(&mut self) -> Vec<AttributeArg> {
+        self.expect_kind(&TokenKind::LParen, "expected `(` in attribute");
+        let mut args = Vec::new();
+
+        while !self.at_eof() && !self.at_kind(&TokenKind::RParen) {
+            if self.eat_kind(&TokenKind::Comma).is_some() {
+                continue;
+            }
+
+            if matches!(self.current().kind, TokenKind::Ident(_))
+                && self.peek_kind(1, &TokenKind::Eq)
+            {
+                let start = self.current_span().start;
+                let name = self
+                    .expect_ident("expected attribute argument name")
+                    .unwrap_or_default();
+                self.expect_kind(&TokenKind::Eq, "expected `=` in attribute argument");
+                let value = self.parse_expr(&[Stop::Comma, Stop::RParen]);
+                args.push(AttributeArg::NameValue {
+                    name,
+                    span: self.span(start, value.span.end),
+                    value,
+                });
+            } else {
+                args.push(AttributeArg::Expr(
+                    self.parse_expr(&[Stop::Comma, Stop::RParen]),
+                ));
+            }
+
+            if self.eat_kind(&TokenKind::Comma).is_none() {
+                break;
+            }
+        }
+
+        self.expect_kind(&TokenKind::RParen, "expected `)` after attribute arguments");
+        args
+    }
+
+    fn peek_kind(&self, offset: usize, kind: &TokenKind) -> bool {
+        self.tokens
+            .get(self.pos + offset)
+            .is_some_and(|token| token_kind_eq(&token.kind, kind))
+    }
+
+    fn at_braced_param_start(&self) -> bool {
+        if !self.at_kind(&TokenKind::LBrace) {
+            return false;
+        }
+
+        match self.tokens.get(self.pos + 1).map(|token| &token.kind) {
+            Some(TokenKind::Keyword(Keyword::Auto | Keyword::Erased | Keyword::Implicit)) => true,
+            Some(TokenKind::Ident(_) | TokenKind::Underscore) => {
+                self.peek_kind(2, &TokenKind::Colon)
+            }
+            _ => false,
+        }
+    }
+
+    fn at_parenthesized_type_binder_start(&self) -> bool {
+        if !self.at_kind(&TokenKind::LParen) {
+            return false;
+        }
+
+        matches!(
+            self.tokens.get(self.pos + 1).map(|token| &token.kind),
+            Some(TokenKind::Ident(_) | TokenKind::Underscore)
+        ) && self.peek_kind(2, &TokenKind::Colon)
     }
 
     fn synchronize_item(&mut self) {
@@ -1378,5 +1719,187 @@ proof fn plus_zero_right(n: Nat) -> n + Z == n {
         };
         assert_eq!(proof.flavor, FnFlavor::Proof);
         assert_eq!(proof.name, "plus_zero_right");
+    }
+
+    #[test]
+    fn parses_nat_vect_example_file() {
+        let result = parse_text(include_str!("../../examples/nat_vect.avtn"));
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_eq!(result.module.items.len(), 4);
+    }
+
+    #[test]
+    fn parses_attributes_import_groups_and_control_flow() {
+        let result = parse_text(
+            r#"
+import std.sync.{TaskGroup, Chan}
+
+#[derive(Clone, Eq)]
+pub struct Handler {
+    pub count: i32,
+}
+
+#[test]
+fn control(xs: Vec<i32>) -> i32 {
+    let acc: i32 = 0;
+
+    if true {
+        return 1;
+    } else {
+        loop {
+            break 2;
+        }
+    }
+
+    for item in xs {
+        continue;
+    }
+
+    while false {
+        break;
+    }
+
+    acc
+}
+"#,
+        );
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_eq!(result.module.items.len(), 3);
+
+        let Item::Import(import) = &result.module.items[0] else {
+            panic!("expected import");
+        };
+        assert_eq!(import.path.segments, ["std", "sync"]);
+        assert_eq!(import.members, ["TaskGroup", "Chan"]);
+
+        let Item::Struct(handler) = &result.module.items[1] else {
+            panic!("expected struct");
+        };
+        assert!(handler.public);
+        assert_eq!(handler.attributes.len(), 1);
+        assert_eq!(handler.fields.len(), 1);
+
+        let Item::Fn(control) = &result.module.items[2] else {
+            panic!("expected function");
+        };
+        assert_eq!(control.attributes.len(), 1);
+        let body = control.body.as_ref().expect("control body");
+        assert_eq!(body.statements.len(), 5);
+        assert!(matches!(
+            body.statements[1],
+            Stmt::Expr(Expr {
+                kind: ExprKind::If { .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            body.statements[2],
+            Stmt::Expr(Expr {
+                kind: ExprKind::For { .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            body.statements[3],
+            Stmt::Expr(Expr {
+                kind: ExprKind::While { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn parses_explicit_implicit_auto_and_erased_binders() {
+        let result = parse_text(
+            r#"
+fn safe_index<T, const N: Nat>(
+    xs: Vect<T, N>,
+    i: Fin<N>,
+    {ctx: IndexCtx<N>},
+    {implicit hint: IndexHint<N>},
+    {auto p: InBounds<i, N>},
+    {erased same_len: Same<N, N>},
+) -> T
+requires p == p
+{
+    xs[i]
+}
+"#,
+        );
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+
+        let Item::Fn(item) = &result.module.items[0] else {
+            panic!("expected function");
+        };
+        let modes = item
+            .params
+            .iter()
+            .map(|param| param.mode)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            modes,
+            [
+                BinderMode::Explicit,
+                BinderMode::Explicit,
+                BinderMode::Implicit,
+                BinderMode::Implicit,
+                BinderMode::Auto,
+                BinderMode::Erased,
+            ]
+        );
+        assert_eq!(item.requires.len(), 1);
+    }
+
+    #[test]
+    fn parses_standalone_erased_binder_after_function_name() {
+        let result = parse_text(
+            r#"
+proof fn reflexive {erased n: Nat} -> n == n {
+    Refl
+}
+"#,
+        );
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+
+        let Item::Fn(item) = &result.module.items[0] else {
+            panic!("expected function");
+        };
+        assert_eq!(item.flavor, FnFlavor::Proof);
+        assert_eq!(item.params.len(), 1);
+        assert_eq!(item.params[0].mode, BinderMode::Erased);
+    }
+
+    #[test]
+    fn parses_dependent_pi_type_binders() {
+        let result = parse_text(
+            r#"
+type CheckedIndex<const N: Nat> =
+    (i: Fin<N>) -> {auto p: InBounds<i, N>} -> {erased same: Same<N, N>} -> T;
+"#,
+        );
+
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+
+        let Item::TypeAlias(item) = &result.module.items[0] else {
+            panic!("expected type alias");
+        };
+        let TypeExprKind::Pi { param, body } = &item.ty.kind else {
+            panic!("expected explicit pi type");
+        };
+        assert_eq!(param.mode, BinderMode::Explicit);
+
+        let TypeExprKind::Pi { param, body } = &body.kind else {
+            panic!("expected auto pi type");
+        };
+        assert_eq!(param.mode, BinderMode::Auto);
+
+        let TypeExprKind::Pi { param, .. } = &body.kind else {
+            panic!("expected erased pi type");
+        };
+        assert_eq!(param.mode, BinderMode::Erased);
     }
 }

@@ -172,6 +172,17 @@ Definition of done:
 
 Цель: получить полное синтаксическое дерево для первого dependent-core slice.
 
+Текущее состояние:
+
+1. Сделано: parser покрывает package/imports, attributes, Rust-like `struct` и
+   `enum`, dependent generics `const N: Nat`, variant `where`, `fn`/`proof fn`,
+   blocks, `let`, `if`, `match`, `for`, `while`, `loop`, `return`, `break`,
+   `continue`, calls, field access, indexing, holes, `rewrite`, `impossible`,
+   `requires`, `ensures`, explicit, implicit, auto и erased binders.
+2. Сделано: добавлен стабильный AST dump для CLI и parser fixture-тестов.
+3. Осталось: более сильный error recovery и расширение snapshot-набора на
+   negative recovery-кейсы.
+
 Задачи:
 
 1. Реализовать parser для:
@@ -230,6 +241,18 @@ Definition of done:
 ## 7. Этап 4: Name Resolution И Пакеты
 
 Цель: превратить AST в HIR с разрешенными именами.
+
+Текущее состояние:
+
+1. Сделано: добавлены `hir` и `resolve` модули со skeleton HIR, `SymbolId`,
+   `BinderId`, `ScopeId`, type/value namespaces и первичной symbol table.
+2. Сделано: `resolve` понижает top-level items, enum variants, generic binders,
+   function params и Pi-type binders; `<T>` становится implicit type binder,
+   `<const N: Nat>` становится erased value binder.
+3. Сделано: `avtan resolve <file.avtn>` печатает symbol table для ручной
+   проверки.
+4. Осталось: реальный lookup путей, imports/aliases, package graph, multi-file
+   scopes и диагностики unknown names.
 
 Задачи:
 

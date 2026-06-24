@@ -20,14 +20,34 @@ pub enum Item {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ImportItem {
+pub struct Attribute {
     pub path: Path,
+    pub args: Vec<AttributeArg>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AttributeArg {
+    Expr(Expr),
+    NameValue {
+        name: String,
+        value: Expr,
+        span: Span,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportItem {
+    pub attributes: Vec<Attribute>,
+    pub path: Path,
+    pub members: Vec<String>,
     pub alias: Option<String>,
     pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EnumItem {
+    pub attributes: Vec<Attribute>,
     pub public: bool,
     pub name: String,
     pub generics: Vec<GenericParam>,
@@ -37,6 +57,7 @@ pub struct EnumItem {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EnumVariant {
+    pub attributes: Vec<Attribute>,
     pub name: String,
     pub generics: Vec<GenericParam>,
     pub kind: VariantKind,
@@ -53,6 +74,7 @@ pub enum VariantKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StructItem {
+    pub attributes: Vec<Attribute>,
     pub public: bool,
     pub name: String,
     pub generics: Vec<GenericParam>,
@@ -63,6 +85,7 @@ pub struct StructItem {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeAliasItem {
+    pub attributes: Vec<Attribute>,
     pub public: bool,
     pub name: String,
     pub generics: Vec<GenericParam>,
@@ -73,6 +96,7 @@ pub struct TypeAliasItem {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FnItem {
+    pub attributes: Vec<Attribute>,
     pub public: bool,
     pub flavor: FnFlavor,
     pub name: String,
@@ -95,6 +119,7 @@ pub enum FnFlavor {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImplItem {
+    pub attributes: Vec<Attribute>,
     pub generics: Vec<GenericParam>,
     pub target: TypeExpr,
     pub items: Vec<Item>,
@@ -116,13 +141,23 @@ pub enum GenericParamKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Param {
+    pub mode: BinderMode,
     pub name: Pattern,
     pub ty: TypeExpr,
     pub span: Span,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BinderMode {
+    Explicit,
+    Implicit,
+    Auto,
+    Erased,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Field {
+    pub attributes: Vec<Attribute>,
     pub public: bool,
     pub name: Option<String>,
     pub ty: TypeExpr,
@@ -151,6 +186,10 @@ pub enum TypeExprKind {
     Array {
         element: Box<TypeExpr>,
         len: Box<Expr>,
+    },
+    Pi {
+        param: Box<Param>,
+        body: Box<TypeExpr>,
     },
     Binary {
         op: BinaryOp,
@@ -222,11 +261,30 @@ pub enum ExprKind {
         scrutinee: Box<Expr>,
         arms: Vec<MatchArm>,
     },
+    If {
+        condition: Box<Expr>,
+        then_branch: Block,
+        else_branch: Option<Box<Expr>>,
+    },
+    While {
+        condition: Box<Expr>,
+        body: Block,
+    },
+    For {
+        pattern: Pattern,
+        iterable: Box<Expr>,
+        body: Block,
+    },
+    Loop {
+        body: Block,
+    },
     Rewrite {
         proof: Box<Expr>,
         body: Box<Expr>,
     },
     Return(Option<Box<Expr>>),
+    Break(Option<Box<Expr>>),
+    Continue,
     Impossible,
     Unknown,
 }

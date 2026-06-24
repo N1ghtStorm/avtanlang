@@ -1,0 +1,8 @@
+module examples.dependent_binders
+  type CheckedIndex<const N: Nat> = (i: Fin<N>) -> {auto p: InBounds<i, N>} -> {erased same: Same<N, N>} -> T
+  fn safe_index<T, const N: Nat>(xs: Vect<T, N>, i: Fin<N>, {implicit ctx: IndexCtx<N>}, {implicit hint: IndexHint<N>}, {auto p: InBounds<i, N>}, {erased same_len: Same<N, N>}) -> T requires p == p
+    block
+      expr xs[i]
+  proof fn reflexive({erased n: Nat}) -> n == n
+    block
+      expr Refl

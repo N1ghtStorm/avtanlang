@@ -1,0 +1,25 @@
+module examples.control_flow
+  import std.sync.{TaskGroup, Chan}
+  attr derive(Clone, Eq)
+  pub struct Handler
+    pub field count: i32
+  attr test
+  fn control(xs: Vec<i32>) -> i32
+    block
+      let acc: i32 = 0
+      if true
+        then
+          block
+            expr return 1
+        else
+          block
+            loop
+              block
+                expr break 2
+      for item in xs
+        block
+          expr continue
+      while false
+        block
+          expr break
+      expr acc
